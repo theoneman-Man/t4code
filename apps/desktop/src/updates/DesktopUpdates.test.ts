@@ -21,6 +21,133 @@ import * as DesktopUpdates from "./DesktopUpdates.ts";
 import { flushCallbacks, makeHarness } from "./updatesTestHarness.ts";
 
 describe("DesktopUpdates", () => {
+  it.effect.each([undefined, "false", "true"])(
+    "keeps packaged updates disabled with env override %s",
+    (disableAutoUpdate) => {
+      let policy: string | undefined = '{"version":1,"autoUpdate":false}';
+      const harness = makeHarness({
+        packagedPolicy: () => policy,
+        env: { T3CODE_DISABLE_AUTO_UPDATE: disableAutoUpdate },
+        installRecord: '{"fromVersion":"1.2.3","targetVersion":"1.2.4"}',
+      });
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const updates = yield* DesktopUpdates.DesktopUpdates;
+          assert.equal((yield* updates.getState).status, "disabled");
+          assert.equal(
+            Option.getOrNull(yield* updates.disabledReason),
+            "Automatic updates are disabled by the packaged policy.",
+          );
+          yield* updates.configure;
+          assert.isFalse(harness.autoDownload());
+          assert.isFalse(harness.autoInstallOnAppQuit());
+          assert.equal(harness.listenerCount(), 0);
+          assert.deepEqual(harness.feedUrls(), []);
+
+          // Removing the file after startup cannot change the captured policy.
+          policy = undefined;
+          yield* updates.configure;
+          yield* updates.setChannel("nightly");
+          harness.emit("update-downloaded", { version: "1.2.4" });
+          harness.emit("error", new Error("unused updater"));
+          yield* TestClock.adjust("20 minutes");
+          assert.isFalse((yield* updates.check("manual")).checked);
+          assert.isFalse((yield* updates.download).accepted);
+          assert.isFalse((yield* updates.install).accepted);
+          assert.isFalse((yield* updates.installPrepared("1.2.4")).accepted);
+          const state = yield* updates.getState;
+          assert.isFalse(state.enabled);
+          assert.equal(state.status, "disabled");
+          assert.equal(state.message, "Automatic updates are disabled by the packaged policy.");
+          assert.isNull(state.errorContext);
+          assert.equal(Option.getOrNull(yield* updates.disabledReason), state.message);
+          assert.equal(harness.sentStates.at(-1)?.status, "disabled");
+          assert.equal(harness.checkCount(), 0);
+          assert.equal(harness.downloadCount(), 0);
+          assert.equal(harness.quitAndInstalls(), 0);
+          assert.deepEqual(harness.feedUrls(), []);
+          assert.deepEqual(harness.installSteps, []);
+        }),
+      ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+    },
+  );
+
+  it.effect(
+    "keeps malformed packaged policy disabled rather than reporting an updater error",
+    () => {
+      const harness = makeHarness({ packagedPolicy: () => '{"version":1}' });
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const updates = yield* DesktopUpdates.DesktopUpdates;
+          yield* updates.configure;
+          const state = yield* updates.setChannel("nightly");
+          assert.equal(state.status, "disabled");
+          assert.isFalse(state.enabled);
+          assert.isNull(state.errorContext);
+          assert.isFalse((yield* updates.check("manual")).checked);
+          assert.deepEqual(harness.feedUrls(), []);
+          assert.equal(harness.listenerCount(), 0);
+        }),
+      ).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect.each([
+    ["missing", undefined],
+    ["allowing", () => '{"version":1,"autoUpdate":true}'],
+  ] as const)("preserves upstream feed behavior with %s policy", ([_name, packagedPolicy]) => {
+    const harness = makeHarness({ packagedPolicy });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        assert.equal((yield* updates.getState).status, "idle");
+        assert.isTrue((yield* updates.check("manual")).checked);
+        assert.equal(harness.checkCount(), 1);
+        assert.deepEqual(harness.feedUrls(), [
+          { provider: "generic", url: "http://localhost:4141" },
+        ]);
+      }),
+    ).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect.each([false, true])(
+    "handles a production feed with packaged updates disabled %s",
+    (policyDisabled) => {
+      const harness = makeHarness({
+        packagedPolicy: policyDisabled ? () => '{"version":1,"autoUpdate":false}' : undefined,
+        appUpdateYml: "provider: github\nowner: example\nrepo: desktop\n",
+        env: { T3CODE_DESKTOP_MOCK_UPDATES: "false", T3CODE_DISABLE_AUTO_UPDATE: "false" },
+      });
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const updates = yield* DesktopUpdates.DesktopUpdates;
+          yield* updates.configure;
+          assert.equal((yield* updates.getState).status, policyDisabled ? "disabled" : "idle");
+          assert.equal((yield* updates.check("manual")).checked, !policyDisabled);
+          assert.equal(harness.checkCount(), policyDisabled ? 0 : 1);
+        }),
+      ).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect("preserves upstream disabled state without a policy or feed", () => {
+    const harness = makeHarness({ env: { T3CODE_DESKTOP_MOCK_UPDATES: "false" } });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        const state = yield* updates.getState;
+        assert.equal(state.status, "disabled");
+        assert.equal(
+          state.message,
+          "Automatic updates are not available because no update feed is configured.",
+        );
+        assert.isFalse((yield* updates.check("manual")).checked);
+      }),
+    ).pipe(Effect.provide(harness.layer));
+  });
+
   it.effect("updates Linux .deb installs and leaves other non-AppImage installs off", () =>
     Effect.gen(function* () {
       const linuxState = (packageType: string | undefined) =>

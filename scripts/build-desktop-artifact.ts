@@ -5,8 +5,8 @@ import {
   hostBuildConfig,
   hostProductName,
   hostIconAssets,
-} from "../packages/extension-sdk/src/brandingBuild.ts";
-import { loadHostBranding } from "../packages/extension-sdk/src/brandingNode.ts";
+} from "@t3tools/extension-sdk/branding/build";
+import { loadHostBranding } from "@t3tools/extension-sdk/branding/node";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeCrypto from "node:crypto";
 import * as NodeModule from "node:module";
@@ -49,6 +49,11 @@ import {
 import { loadRepoEnv } from "./lib/public-config.ts";
 import { selectDesktopRuntimeExternalDependencies } from "./lib/desktop-external-packages.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
+import {
+  applyPackagedExtensionsConfig,
+  stagePackagedExtensions,
+  type PackagedExtensionResources,
+} from "./lib/packaged-extensions.ts";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -2835,6 +2840,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     | undefined,
   wslRuntimeBundled = false,
   arch?: typeof BuildArch.Type,
+  packagedExtensions?: PackagedExtensionResources,
 ) {
   const buildConfig: Record<string, unknown> = {
     appId: DESKTOP_APP_ID,
@@ -3039,7 +3045,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     buildConfig.win = winConfig;
   }
 
-  return hostBuildConfig(buildConfig);
+  return applyPackagedExtensionsConfig(hostBuildConfig(buildConfig), packagedExtensions);
 });
 
 const assertPlatformBuildResources = Effect.fn("assertPlatformBuildResources")(function* (
@@ -3395,6 +3401,7 @@ export const validateWindowsPackagedPayload = Effect.fn(
   readonly targetArch: typeof BuildArch.Type;
   readonly appVersion: string;
   readonly expectWslRuntime?: boolean;
+  readonly extensionsBundled?: boolean;
   readonly fileLimit?: number;
   readonly verbose?: boolean;
 }) {
@@ -3591,11 +3598,18 @@ export const validateWindowsPackagedPayload = Effect.fn(
   }
 
   const fileCount = yield* countPayloadFiles(packagedAppDir);
-  if (fileCount > fileLimit) {
+  const extensionDir = path.join(packagedAppDir, "resources/extensions");
+  // Extension runtimes deliberately live outside ASAR; keep the host's loose-file budget intact.
+  const extensionFileCount =
+    input.extensionsBundled && (yield* fs.exists(extensionDir))
+      ? yield* countPayloadFiles(extensionDir)
+      : 0;
+  const hostFileCount = fileCount - extensionFileCount;
+  if (hostFileCount > fileLimit) {
     return yield* new WindowsPackagedPayloadValidationError({
       reason: "file-limit-exceeded",
       packagedAppDir,
-      fileCount,
+      fileCount: hostFileCount,
       fileLimit,
     });
   }
@@ -3910,6 +3924,11 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     options.platform === "win"
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
       : undefined;
+  const packagedExtensions = yield* stagePackagedExtensions({
+    repoRoot,
+    stageAppDir,
+    brandingPresent: loadHostBranding(repoRoot) !== null,
+  });
   const stagePackageJson: StagePackageJson = {
     name: "t3code",
     version: appVersion,
@@ -3940,6 +3959,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
         : undefined,
       bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
       options.arch,
+      packagedExtensions,
     ),
     dependencies: stageDependencies,
     devDependencies: {
@@ -4111,6 +4131,8 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
         platform: options.platform,
         runtimeArchivePath: options.wslRuntime,
       }),
+      extensionsBundled:
+        packagedExtensions?.extraResources.some(({ to }) => to === "extensions") ?? false,
       verbose: options.verbose,
     });
   }

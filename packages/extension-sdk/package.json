@@ -15,6 +15,10 @@
       "types": "./src/node.ts",
       "import": "./src/node.ts"
     },
+    "./packaged": {
+      "types": "./src/packaged.ts",
+      "import": "./src/packaged.ts"
+    },
     "./protocol": {
       "types": "./src/protocol.ts",
       "import": "./src/protocol.ts"
@@ -26,6 +30,10 @@
     "./branding": {
       "types": "./src/branding.ts",
       "import": "./src/branding.ts"
+    },
+    "./branding/build": {
+      "types": "./src/brandingBuild.ts",
+      "import": "./src/brandingBuild.ts"
     },
     "./branding/node": {
       "types": "./src/brandingNode.ts",

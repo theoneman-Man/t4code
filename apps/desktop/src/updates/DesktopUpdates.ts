@@ -35,6 +35,7 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import { normalizeDesktopUpdateReleaseNotes } from "./releaseNotes.ts";
+import { readPackagedUpdateDisabledReason } from "./packagedPolicy.ts";
 import { resolveDefaultDesktopUpdateChannel } from "./updateChannels.ts";
 import {
   createInitialDesktopUpdateState,
@@ -347,6 +348,8 @@ export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
+  // Capture once at startup so environment settings and later file changes cannot lift the policy.
+  const packagedDisabledReason = yield* readPackagedUpdateDisabledReason(environment.resourcesPath);
 
   const appUpdateYmlConfigRef = yield* Ref.make<Option.Option<AppUpdateYmlConfig>>(Option.none());
   const activeUpdateActionRef = yield* Ref.make<Option.Option<UpdateAction>>(Option.none());
@@ -358,11 +361,17 @@ export const make = Effect.gen(function* () {
   const lastLoggedDownloadMilestoneRef = yield* Ref.make(-1);
   const notAppliedVersionRef = yield* Ref.make(Option.none<string>());
   const updateStateRef = yield* Ref.make<DesktopUpdateState>(
-    createInitialDesktopUpdateState(
-      environment.appVersion,
-      environment.runtimeInfo,
-      environment.defaultDesktopSettings.updateChannel,
-    ),
+    Option.isSome(packagedDisabledReason)
+      ? createBaseUpdateState(
+          environment.defaultDesktopSettings.updateChannel,
+          packagedDisabledReason,
+          environment,
+        )
+      : createInitialDesktopUpdateState(
+          environment.appVersion,
+          environment.runtimeInfo,
+          environment.defaultDesktopSettings.updateChannel,
+        ),
   );
 
   const stateChanges = yield* PubSub.sliding<DesktopUpdateState>(16);
@@ -418,6 +427,7 @@ export const make = Effect.gen(function* () {
   );
 
   const resolveDisabledReason = Effect.gen(function* () {
+    if (Option.isSome(packagedDisabledReason)) return packagedDisabledReason;
     const hasFeedConfig = yield* hasUpdateFeedConfig;
     return Option.fromNullishOr(
       getAutoUpdateDisabledReason({
@@ -1035,6 +1045,15 @@ export const make = Effect.gen(function* () {
     emitState,
     disabledReason: resolveDisabledReason,
     configure: Effect.gen(function* () {
+      if (Option.isSome(packagedDisabledReason)) {
+        yield* electronUpdater.setAutoDownload(false);
+        yield* electronUpdater.setAutoInstallOnAppQuit(false);
+        const settings = yield* desktopSettings.get;
+        yield* setState(
+          createBaseUpdateState(settings.updateChannel, packagedDisabledReason, environment),
+        );
+        return;
+      }
       const context = yield* Effect.context<never>();
       const runEffect = (effect: Effect.Effect<void>) => {
         void Effect.runPromiseWith(context)(effect);

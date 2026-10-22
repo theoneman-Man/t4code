@@ -2117,6 +2117,9 @@ importers:
       '@electron/osx-sign':
         specifier: 2.7.0
         version: 2.7.0
+      '@t3tools/extension-sdk':
+        specifier: workspace:*
+        version: link:../packages/extension-sdk
       '@t3tools/shared':
         specifier: workspace:*
         version: link:../packages/shared

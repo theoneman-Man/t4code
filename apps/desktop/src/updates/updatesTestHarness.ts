@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Fixture state follows the test runner's temporary directory.
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { DesktopUpdateState } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -35,14 +38,19 @@ export interface UpdatesHarnessOptions {
   readonly platform?: NodeJS.Platform;
   readonly packageType?: string | undefined;
   readonly installRecord?: string | undefined;
+  readonly packagedPolicy?: (() => string | undefined) | undefined;
+  readonly appUpdateYml?: string;
 }
 
 export function makeHarness(options: UpdatesHarnessOptions = {}) {
+  const testHome = NodeFS.mkdtempSync(`${NodeOS.tmpdir()}/t3-desktop-updates-`);
   let checkCount = 0;
   let quitAndInstallCount = 0;
   let downloadCount = 0;
   let allowDowngrade = false;
   let fullChangelog = false;
+  let autoDownload = true;
+  let autoInstallOnAppQuit = true;
   const feedUrls: ElectronUpdater.ElectronUpdaterFeedUrl[] = [];
   const listeners = new Map<string, Set<(...args: readonly unknown[]) => void>>();
   const sentStates: DesktopUpdateState[] = [];
@@ -70,8 +78,14 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
       Effect.sync(() => {
         feedUrls.push(options);
       }),
-    setAutoDownload: () => Effect.void,
-    setAutoInstallOnAppQuit: () => Effect.void,
+    setAutoDownload: (value) =>
+      Effect.sync(() => {
+        autoDownload = value;
+      }),
+    setAutoInstallOnAppQuit: (value) =>
+      Effect.sync(() => {
+        autoInstallOnAppQuit = value;
+      }),
     setChannel: () => Effect.void,
     setAllowPrerelease: () => Effect.void,
     allowDowngrade: Effect.sync(() => allowDowngrade),
@@ -154,7 +168,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
 
   const layerEnvironment = DesktopEnvironment.layer({
     dirname: "/repo/apps/desktop/src",
-    homeDirectory: `/tmp/t3-desktop-updates-home-${process.pid}`,
+    homeDirectory: testHome,
     platform: options.platform ?? "darwin",
     processArch: "x64",
     appVersion: "1.2.3",
@@ -167,7 +181,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
       Layer.mergeAll(
         NodeServices.layer,
         DesktopConfig.layerTest({
-          T3CODE_HOME: `/tmp/t3-desktop-updates-test-${process.pid}`,
+          T3CODE_HOME: testHome,
           T3CODE_DESKTOP_MOCK_UPDATES: "true",
           T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT: "4141",
           ...options.env,
@@ -220,11 +234,18 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     path.endsWith(DesktopUpdates.DESKTOP_UPDATE_INSTALL_RECORD_FILE);
   const layerFileSystem = FileSystem.layerNoop({
     readFileString: (path) => {
+      const policy = options.packagedPolicy?.();
+      if (path.endsWith("t4-packaged-policy.json") && policy !== undefined) {
+        return Effect.succeed(policy);
+      }
+      if (path.endsWith("app-update.yml") && options.appUpdateYml !== undefined) {
+        return Effect.succeed(options.appUpdateYml);
+      }
       const installRecord = isInstallRecord(path)
         ? (installRecords.get(path) ?? previousInstallRecord)
         : undefined;
       if (installRecord !== undefined) return Effect.succeed(installRecord);
-      return path === "/missing/resources/package-type" && options.packageType !== undefined
+      return path.endsWith("package-type") && options.packageType !== undefined
         ? Effect.succeed(options.packageType)
         : Effect.fail(
             PlatformError.systemError({
@@ -258,7 +279,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     Layer.provideMerge(layerSettings),
     Layer.provideMerge(
       DesktopConfig.layerTest({
-        T3CODE_HOME: `/tmp/t3-desktop-updates-test-${process.pid}`,
+        T3CODE_HOME: testHome,
         T3CODE_DESKTOP_MOCK_UPDATES: "true",
         T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT: "4141",
         ...options.env,
@@ -279,6 +300,8 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     downloadCount: () => downloadCount,
     feedUrls: (): ElectronUpdater.ElectronUpdaterFeedUrl[] => feedUrls,
     fullChangelog: () => fullChangelog,
+    autoDownload: () => autoDownload,
+    autoInstallOnAppQuit: () => autoInstallOnAppQuit,
     listenerCount: () =>
       Array.from(listeners.values()).reduce(
         (total, eventListeners) => total + eventListeners.size,

@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - Tests use Node's glob matcher to verify electron-builder exclusions.
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
+import { vi } from "vite-plus/test";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { extractFile } from "@electron/asar";
@@ -67,6 +68,10 @@ import {
 } from "./update-release-package-versions.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
+import { stagePackagedExtensions } from "./lib/packaged-extensions.ts";
+
+// A developer's ignored branding config must not change the upstream fixture identity.
+vi.mock("../packages/extension-sdk/src/brandingNode.ts", () => ({ loadHostBranding: () => null }));
 
 const encodeModuleUrl = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
 const decodePackageVersion = Schema.decodeUnknownEffect(
@@ -212,6 +217,103 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
 });
 
 it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
+  it.effect.each(["extensions", "branding"] as const)(
+    "disables publishing and keeps %s resources outside ASAR",
+    (kind) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "desktop-packaged-config-" });
+        if (kind === "extensions") {
+          yield* fs.writeFileString(path.join(root, "t4.extensions.json"), "[]");
+        }
+        const staged = yield* stagePackagedExtensions({
+          repoRoot: root,
+          stageAppDir: path.join(root, "app"),
+          brandingPresent: kind === "branding",
+        });
+        const config = yield* createBuildConfig(
+          "win",
+          "nsis",
+          "1.2.3",
+          false,
+          true,
+          3456,
+          undefined,
+          false,
+          "x64",
+          staged,
+        );
+        assert.isNull(config.publish);
+        const resources = config.extraResources as Array<{ from: string; to: string }>;
+        assert.isTrue(resources.some(({ to }) => to === "t4-packaged-policy.json"));
+        if (kind === "extensions") assert.isTrue(resources.some(({ to }) => to === "extensions"));
+        const exclusions = config.files as string[];
+        const policySource = staged!.extraResources.find(
+          ({ to }) => to === "t4-packaged-policy.json",
+        )!.from;
+        assert.isTrue(
+          exclusions.some(
+            (glob) => glob.startsWith("!") && NodePath.matchesGlob(policySource, glob.slice(1)),
+          ),
+        );
+      }).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: {
+                GITHUB_REPOSITORY: "example/upstream",
+                T3CODE_DESKTOP_UPDATE_REPOSITORY: "example/override",
+              },
+            }),
+          ),
+        ),
+      ),
+  );
+
+  it.effect("keeps upstream config and feed selection when no list or branding is present", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "desktop-upstream-config-" });
+      const staged = yield* stagePackagedExtensions({
+        repoRoot: root,
+        stageAppDir: path.join(root, "app"),
+        brandingPresent: false,
+      });
+      const upstream = yield* createBuildConfig(
+        "win",
+        "nsis",
+        "1.2.3",
+        false,
+        true,
+        3456,
+        undefined,
+        false,
+        "x64",
+      );
+      const actual = yield* createBuildConfig(
+        "win",
+        "nsis",
+        "1.2.3",
+        false,
+        true,
+        3456,
+        undefined,
+        false,
+        "x64",
+        staged,
+      );
+      assert.deepEqual(actual, upstream);
+      assert.deepEqual(actual.publish, [{ provider: "generic", url: "http://localhost:3456" }]);
+      assert.isFalse(
+        (actual.extraResources as Array<{ to: string }>).some(
+          ({ to }) => to === "extensions" || to === "t4-packaged-policy.json",
+        ),
+      );
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
   it.effect("rejects overlapping builds from another process until restoration finishes", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -868,6 +970,38 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.deepStrictEqual(secondAsar, firstAsar);
       }),
     ).pipe(Effect.provideService(HostProcess.Platform, "linux")),
+  );
+
+  it.effect(
+    "counts loose extension payloads separately from the upstream Windows file budget",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const fixture = yield* makeWindowsPayloadFixture({ copyUnpackedNatives: true });
+        const extensionDir = path.join(fixture.packagedAppDir, "resources/extensions/fixture");
+        yield* fs.makeDirectory(extensionDir, { recursive: true });
+        for (let index = 0; index < WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT; index++) {
+          yield* fs.writeFileString(path.join(extensionDir, `${index}.txt`), "payload");
+        }
+        const input = {
+          stageDistDir: fixture.stageDistDir,
+          appExecutableName: fixture.appExecutableName,
+          targetArch: "x64" as const,
+          appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+        };
+        const upstreamError = yield* Effect.flip(validateWindowsPackagedPayload(input));
+        assert.instanceOf(upstreamError, WindowsPackagedPayloadValidationError);
+        assert.equal(upstreamError.reason, "file-limit-exceeded");
+        const result = yield* validateWindowsPackagedPayload({ ...input, extensionsBundled: true });
+        assert.isAbove(result.fileCount, WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT);
+        yield* fs.writeFileString(path.join(fixture.packagedAppDir, "unexpected.txt"), "host");
+        const error = yield* Effect.flip(
+          validateWindowsPackagedPayload({ ...input, extensionsBundled: true, fileLimit: 1 }),
+        );
+        assert.instanceOf(error, WindowsPackagedPayloadValidationError);
+        assert.equal(error.reason, "file-limit-exceeded");
+      }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
   );
 
   it.effect.each(["x64", "arm64"] as const)(

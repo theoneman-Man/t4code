@@ -21,6 +21,7 @@ import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "../wsl/DesktopWslServerTree.ts";
 import * as DesktopExtensionOwner from "./DesktopExtensionOwner.ts";
+import { loadExtensions } from "@t3tools/extension-sdk/node";
 
 const fixtureRoot = NodeURL.fileURLToPath(
   new URL("../../../../packages/extension-sdk/fixtures/sample", import.meta.url),
@@ -38,6 +39,7 @@ const configurationLayer = (
   listFile: string,
   platform: NodeJS.Platform,
   processArch: NodeJS.Architecture,
+  isPackaged = false,
 ) => {
   const environment = DesktopEnvironment.layer({
     dirname: NodePath.join(directory, "apps/desktop/src"),
@@ -46,14 +48,14 @@ const configurationLayer = (
     processArch,
     appVersion: "1.2.3",
     appPath: directory,
-    isPackaged: false,
+    isPackaged,
     resourcesPath: directory,
     runningUnderArm64Translation: false,
   }).pipe(
     Layer.provide(
       DesktopConfig.layerTest({
         T3CODE_HOME: directory,
-        VITE_DEV_SERVER_URL: "http://localhost:5173",
+        ...(isPackaged ? {} : { VITE_DEV_SERVER_URL: "http://localhost:5173" }),
       }),
     ),
   );
@@ -87,6 +89,184 @@ const configurationLayer = (
     Layer.provide(environment),
   );
 };
+
+const packagedFixture = Effect.gen(function* () {
+  const f = yield* fixture;
+  const root = NodePath.join(f.directory, "extensions", "sample");
+  yield* f.fs.makeDirectory(NodePath.join(root, "runtime"), { recursive: true });
+  yield* f.fs.makeDirectory(NodePath.join(root, "work"));
+  yield* f.fs.copyFile(
+    NodePath.join(fixtureRoot, "backend/server.mjs"),
+    NodePath.join(root, "server.mjs"),
+  );
+  yield* f.fs.writeFileString(
+    NodePath.join(root, "launch.mjs"),
+    `import * as FS from "node:fs";
+import * as Path from "node:path";
+FS.writeFileSync(Path.join(process.env.T4_EXT_DATA_DIR, "backend.cwd"), process.cwd());
+await import("./server.mjs");
+`,
+  );
+  const executable = NodePath.join(root, "runtime", NodePath.basename(process.execPath));
+  yield* f.fs.copyFile(process.execPath, executable);
+  yield* f.fs.writeFileString(
+    NodePath.join(root, "t4-extension.json"),
+    JSON.stringify({
+      id: "sample",
+      sdk: 1,
+      backend: {
+        command: [`./runtime/${NodePath.basename(process.execPath)}`, "./launch.mjs"],
+        cwd: "./work",
+        protocol: 1,
+        dataDir: f.dataDir,
+      },
+      routes: [{ method: "GET", path: "/**", scope: "read" }],
+    }),
+  );
+  yield* f.fs.writeFileString(
+    NodePath.join(f.directory, "extensions/index.json"),
+    JSON.stringify({ version: 1, extensions: [{ id: "sample", dir: "sample" }] }),
+  );
+  return { ...f, root };
+});
+
+it.live(
+  "packaged desktop hands ready backends and loadable routes to server restarts and stops on quit",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { fs, directory, dataDir, listFile, root } = yield* packagedFixture;
+        // A packaged app must ignore even a valid development list.
+        yield* fs.writeFileString(listFile, "[]");
+        yield* Effect.gen(function* () {
+          const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+          const shutdown = yield* DesktopShutdown.DesktopShutdown;
+          const first = yield* configuration.resolvePrimary;
+          const host = first.bootstrap.extensionHost;
+          const descriptor = host?.backends[0];
+          expect(descriptor).toBeDefined();
+          if (!descriptor || !host?.listFile) return yield* Effect.die("Missing packaged handoff");
+          expect(descriptor.dataDir).toBe(dataDir);
+          expect(
+            loadExtensions(directory, host.listFile).map((extension) => ({
+              root: extension.root,
+              routes: extension.manifest.routes,
+            })),
+          ).toEqual([{ root, routes: [{ method: "GET", path: "/**", scope: "read" }] }]);
+          const pid = Number(yield* fs.readFileString(NodePath.join(dataDir, "backend.pid")));
+          expect(yield* fs.readFileString(NodePath.join(dataDir, "backend.cwd"))).toBe(
+            NodePath.join(root, "work"),
+          );
+          expect((yield* configuration.resolvePrimary).bootstrap.extensionHost).toEqual(host);
+          expect(Number(yield* fs.readFileString(NodePath.join(dataDir, "backend.pid")))).toBe(pid);
+          const client = yield* HttpClient.HttpClient;
+          expect(
+            yield* (yield* client.get(descriptor.url + "/hello", {
+              headers: { authorization: "Bearer " + descriptor.token },
+            })).json,
+          ).toEqual({ message: "hello from sample" });
+          yield* shutdown.request;
+          yield* shutdown.markComplete;
+          expect(() => process.kill(pid, 0)).toThrow();
+        }).pipe(
+          Effect.provide(
+            configurationLayer(
+              directory,
+              listFile,
+              yield* HostProcess.Platform,
+              yield* HostProcess.Architecture,
+              true,
+            ),
+          ),
+        );
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+);
+
+it.live(
+  "packaged backends restart and suspend for updates using the data-dir override without PATH Node",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { fs, directory, dataDir } = yield* packagedFixture;
+        const override = NodePath.join(directory, "override-data");
+        const owner = yield* DesktopExtensionOwner.make({
+          hostRoot: directory,
+          resourcesPath: directory,
+          enabled: true,
+          platform: yield* HostProcess.Platform,
+          stateDir: directory,
+          logsDir: directory,
+          environment: { ...process.env, T4_EXT_DATA_DIR__SAMPLE: override },
+        }).pipe(
+          Effect.provideService(SpawnExecutableResolution, () => {
+            throw new Error("Packaged runtime must not resolve PATH Node");
+          }),
+        );
+        const bootstrap = yield* owner.bootstrap;
+        const first = bootstrap.extensionHost?.backends[0];
+        if (!first) return yield* Effect.die("Missing packaged descriptor");
+        expect(first.dataDir).toBe(override);
+        expect(loadExtensions(directory, bootstrap.extensionHost!.listFile)[0]?.dataDir).toBe(
+          override,
+        );
+        expect(yield* fs.exists(dataDir)).toBe(false);
+        const firstPid = Number(yield* fs.readFileString(NodePath.join(override, "backend.pid")));
+        const restarting = yield* owner.awaitState("sample", "restarting").pipe(Effect.forkScoped);
+        const client = yield* HttpClient.HttpClient;
+        yield* client
+          .post(first.url + "/crash", { headers: { authorization: "Bearer " + first.token } })
+          .pipe(Effect.flatMap((response) => response.text));
+        yield* Fiber.join(restarting);
+        yield* owner.awaitState("sample", "ready");
+        const second = (yield* owner.bootstrap).extensionHost?.backends[0];
+        expect(second?.url).toBe(first.url);
+        expect(second?.token).toBe(first.token);
+        expect(second?.instanceId).not.toBe(first.instanceId);
+        expect(() => process.kill(firstPid, 0)).toThrow();
+        const secondPid = Number(yield* fs.readFileString(NodePath.join(override, "backend.pid")));
+        yield* owner.suspend;
+        expect(() => process.kill(secondPid, 0)).toThrow();
+        yield* owner.resume;
+        const thirdPid = Number(yield* fs.readFileString(NodePath.join(override, "backend.pid")));
+        expect(thirdPid).not.toBe(secondPid);
+        yield* owner.stop;
+        expect(() => process.kill(thirdPid, 0)).toThrow();
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+);
+
+it.effect(
+  "missing and invalid packaged indexes start without extensions or a development fallback",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { fs, directory, listFile } = yield* fixture;
+        yield* fs.writeFileString(listFile, JSON.stringify([fixtureRoot]));
+        yield* fs.makeDirectory(NodePath.join(directory, "extensions"));
+        for (const contents of [undefined, "{", JSON.stringify({ version: 2, extensions: [] })]) {
+          if (contents !== undefined)
+            yield* fs.writeFileString(NodePath.join(directory, "extensions/index.json"), contents);
+          yield* Effect.gen(function* () {
+            const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+            const host = (yield* configuration.resolvePrimary).bootstrap.extensionHost;
+            expect(host?.backends).toEqual([]);
+            if (host?.listFile) expect(loadExtensions(directory, host.listFile)).toEqual([]);
+          }).pipe(
+            Effect.provide(
+              configurationLayer(
+                directory,
+                listFile,
+                yield* HostProcess.Platform,
+                yield* HostProcess.Architecture,
+                true,
+              ),
+            ),
+          );
+        }
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
 
 it.live("one desktop owner survives server config restarts and stops before quit completes", () =>
   Effect.scoped(
@@ -260,7 +440,11 @@ it.live("resolves node through the prepared shell PATH instead of the Electron e
     Effect.gen(function* () {
       const { fs, directory, dataDir, listFile } = yield* fixture;
       yield* fs.writeFileString(listFile, JSON.stringify([{ path: fixtureRoot, dataDir }]));
-      const environment = { ...process.env, PATH: "prepared-shell-path" };
+      const environment = {
+        ...process.env,
+        PATH: "prepared-shell-path",
+        T4_EXT_DATA_DIR__SAMPLE: NodePath.join(directory, "ignored-packaged-override"),
+      };
       const platform = yield* HostProcess.Platform;
       const lookups: unknown[] = [];
       const owner = yield* DesktopExtensionOwner.make({
@@ -285,6 +469,7 @@ it.live("resolves node through the prepared shell PATH instead of the Electron e
         },
       ]);
       if (!descriptor) return yield* Effect.die("Missing Node fixture descriptor");
+      expect(descriptor.dataDir).toBe(dataDir);
       const client = yield* HttpClient.HttpClient;
       expect(
         yield* (yield* client.get(descriptor.url + "/hello", {

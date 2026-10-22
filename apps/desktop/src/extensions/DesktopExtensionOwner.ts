@@ -18,11 +18,16 @@ import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import type * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopShutdown from "../app/DesktopShutdown.ts";
 import * as ExtensionUpdates from "./updates.ts";
+import {
+  loadPackagedExtensions,
+  writePackagedExtensionList,
+} from "@t3tools/extension-sdk/packaged";
 
 export interface OwnerOptions extends Omit<ProcessOptions, "executable"> {
   readonly hostRoot: string;
   readonly listFile?: string;
   readonly enabled: boolean;
+  readonly resourcesPath?: string;
 }
 
 /** Tests provide a temp list without reading the developer's repo configuration. */
@@ -43,11 +48,20 @@ export const make = Effect.fn("DesktopExtensionOwner.make")(function* (options: 
     }),
   );
   yield* Effect.addFinalizer(() => stop);
-  const listFile = NodePath.resolve(options.hostRoot, options.listFile ?? EXTENSION_LIST_FILE);
-  const hasList = options.enabled && NodeFS.existsSync(listFile);
+  const packaged = options.resourcesPath !== undefined;
+  // The server consumes the existing host-list format, while resources remain read-only.
+  const listFile = packaged
+    ? NodePath.join(options.stateDir, "packaged-extensions.json")
+    : NodePath.resolve(options.hostRoot, options.listFile ?? EXTENSION_LIST_FILE);
+  const hasList = options.enabled && (packaged || NodeFS.existsSync(listFile));
   let extensions: ResolvedExtension[] = [];
   if (hasList) {
-    extensions = yield* Effect.try(() => loadExtensions(options.hostRoot, listFile)).pipe(
+    extensions = yield* Effect.try(() => {
+      if (options.resourcesPath === undefined) return loadExtensions(options.hostRoot, listFile);
+      const loaded = loadPackagedExtensions(options.resourcesPath, options.environment);
+      writePackagedExtensionList(listFile, loaded);
+      return loaded;
+    }).pipe(
       Effect.catch(() =>
         Effect.logError("Extensions disabled: invalid desktop extension configuration.").pipe(
           Effect.as([]),
@@ -227,8 +241,8 @@ export const makeForDesktop = Effect.fn("DesktopExtensionOwner.makeForDesktop")(
     hostRoot: environment.rootDir,
     platform: environment.platform,
     ...options,
-    // Packaged list/root selection is supplied by the packaging integration.
-    enabled: environment.isDevelopment,
+    enabled: environment.isPackaged || environment.isDevelopment,
+    ...(environment.isPackaged ? { resourcesPath: environment.resourcesPath } : {}),
     stateDir: environment.stateDir,
     logsDir: environment.logDir,
     // The shell environment is prepared before the first bootstrap starts extensions.
