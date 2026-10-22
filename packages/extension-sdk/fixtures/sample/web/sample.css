@@ -1,0 +1,7 @@
+@layer ext-sample {
+  .t4-ext-sample .sample-view {
+    display: grid;
+    gap: 0.75rem;
+    padding: 1rem;
+  }
+}

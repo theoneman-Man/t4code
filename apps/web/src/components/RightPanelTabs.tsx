@@ -92,6 +92,13 @@ import { PierreEntryIcon } from "./chat/PierreEntryIcon";
 import { resolvePullRequestState } from "./pullRequest/pullRequestPresentation";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { observeResize } from "~/lib/observeResize";
+import {
+  ExtensionPanelMenuItems,
+  ExtensionPanelLauncherItems,
+  ExtensionPanelIcon,
+  ExtensionPanels,
+} from "../extensions/Panels";
+import { findExtensionSlot } from "../extensions/registry";
 
 export interface RightPanelTabsProps {
   mode: PreviewPanelMode;
@@ -537,6 +544,7 @@ function RightPanelEmptyState(props: {
             ),
           )}
         </div>
+        <ExtensionPanelLauncherItems />
       </div>
     </div>
   );
@@ -548,6 +556,8 @@ function surfaceTitle(
   terminalLabelsById: ReadonlyMap<string, string>,
 ): string {
   switch (surface.kind) {
+    case "extension":
+      return findExtensionSlot(surface.slotKey, "rightPanel")?.slot.title ?? "Extension";
     case "diff":
       return "Diff";
     case "files":
@@ -628,6 +638,8 @@ function SurfaceIcon({
   pullRequestStatusSeed: PullRequestTabStatusSeed | undefined;
 }) {
   switch (surface.kind) {
+    case "extension":
+      return <ExtensionPanelIcon slotKey={surface.slotKey} />;
     case "preview":
       return <PreviewFavicon capturedUrl={previewCapturedUrl} url={previewUrl} />;
     case "diff":
@@ -1385,6 +1397,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                       </SurfaceMenuItem>
                     );
                   })}
+                  <ExtensionPanelMenuItems />
                 </MenuPopup>
               </Menu>
             ) : null}
@@ -1466,7 +1479,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             deviceAvailable={props.deviceAvailable}
           />
         ) : (
-          props.children
+          <ExtensionPanels
+            surfaces={props.surfaces}
+            activeSurfaceId={props.activeSurfaceId}
+            open={props.open !== false}
+            environmentId={props.environmentId}
+          >
+            {props.children}
+          </ExtensionPanels>
         )}
       </div>
     </PreviewPanelShell>

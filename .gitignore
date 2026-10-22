@@ -46,3 +46,7 @@ node_modules/
 
 # pnpm content-addressable store; never belongs in the repo.
 .pnpm-store/
+
+# Host-local extension list and branding (see UPSTREAM_HOOKS.md)
+t4.extensions.json
+t4.branding.json

@@ -48,6 +48,7 @@ import {
 } from "./settingsSearch";
 import { useAvailableSettingsSearchItems } from "./useAvailableSettingsSearchItems";
 import { validateSettingsScopeSearch } from "./settingsScope";
+import { ExtensionSettingsNav, hasExtensionSettingsSelection } from "../../extensions/Settings";
 
 const SnapShotIcon = createLucideIcon("snap-shot", [
   [
@@ -328,15 +329,17 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
               </SidebarMenu>
             ) : (
               <SidebarMenu>
+                <ExtensionSettingsNav />
                 {navItems.map((item) => {
                   const Icon = item.icon;
                   const isGeneralDetailPage =
                     item.to === "/settings/general" &&
                     pathname === "/settings/open-source-licenses";
                   const isActive =
-                    isGeneralDetailPage ||
-                    pathname === item.to ||
-                    pathname.startsWith(`${item.to}/`);
+                    !hasExtensionSettingsSelection(currentHash) &&
+                    (isGeneralDetailPage ||
+                      pathname === item.to ||
+                      pathname.startsWith(`${item.to}/`));
                   return (
                     <SidebarMenuItem key={item.to}>
                       <SidebarMenuButton

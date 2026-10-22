@@ -11,6 +11,12 @@ import { useClosedViewStore } from "./closedViewStore";
 import { resolveStorage } from "./lib/storage";
 import type { ThreadPanelPresentation } from "./rightPanelLayout";
 import type { ChatFileAttachment } from "./types";
+import {
+  extensionPanelSurface,
+  restoreExtensionPanel,
+  removeUnknownExtensionPanels,
+  type ExtensionPanelSurface,
+} from "./extensions/panelSurface";
 
 const RIGHT_PANEL_KINDS = [
   "diff",
@@ -22,7 +28,7 @@ const RIGHT_PANEL_KINDS = [
   "pull-request",
   "pull-requests",
 ] as const;
-export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
+export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number] | "extension";
 
 export type PullRequestDetailTab = "summary" | "guide" | "timeline" | "code";
 
@@ -34,6 +40,7 @@ export interface DeviceTabTarget {
 }
 
 export type RightPanelSurface =
+  | ExtensionPanelSurface
   | { id: `browser:${string}`; kind: "preview"; resourceId: string }
   | { id: "browser:new"; kind: "preview"; resourceId: null }
   | { id: "device" | `device:${string}`; kind: "device"; target?: DeviceTabTarget; title?: string }
@@ -107,6 +114,7 @@ export interface ThreadPanelVisibility {
 }
 
 interface RightPanelStoreState {
+  openExtension: (ref: ScopedThreadRef, slotKey: string) => boolean;
   byThreadKey: Record<string, ThreadRightPanelState>;
   pendingMaximizeThreadKey: string | null;
   requestMaximize: (ref: ScopedThreadRef) => void;
@@ -129,7 +137,7 @@ interface RightPanelStoreState {
   ) => boolean;
   open: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "extension">,
   ) => void;
   openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget, automatic?: boolean) => void;
   renameDevice: (ref: ScopedThreadRef, surfaceId: string, title: string) => void;
@@ -193,7 +201,7 @@ interface RightPanelStoreState {
   toggleVisibility: (ref: ScopedThreadRef) => void;
   toggle: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "extension">,
   ) => void;
   setThreadPanelOpen: (
     ref: ScopedThreadRef,
@@ -216,7 +224,7 @@ const DEFAULT_THREAD_PANEL_VISIBILITY: ThreadPanelVisibility = {
 };
 
 const singletonSurface = (
-  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request">,
+  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request" | "extension">,
 ): RightPanelSurface => {
   switch (kind) {
     case "diff":
@@ -465,6 +473,10 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                 ? validThreadState.surfaces.flatMap<RightPanelSurface>((surface) => {
                     const kind = (surface as { kind?: string }).kind;
                     if (kind === "plan" || kind === "agents") return [];
+                    if (surface.kind === "extension") {
+                      const restored = restoreExtensionPanel(surface);
+                      return restored ? [restored] : [];
+                    }
                     if (
                       (surface.kind === "file" || surface.kind === "files") &&
                       "folderTrail" in surface &&
@@ -599,6 +611,14 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
 export const useRightPanelStore = create<RightPanelStoreState>()(
   persist(
     (set, get) => ({
+      openExtension: (ref, slotKey) => {
+        const surface = extensionPanelSurface(slotKey);
+        if (!surface) return false;
+        set((state) =>
+          userAction(state, scopedThreadKey(ref), (current) => upsertSurface(current, surface)),
+        );
+        return true;
+      },
       byThreadKey: {},
       pendingMaximizeThreadKey: null,
       requestMaximize: (ref) => set({ pendingMaximizeThreadKey: scopedThreadKey(ref) }),
@@ -1131,6 +1151,10 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
         ),
       }),
       migrate: migratePersistedRightPanelState,
+      merge: (persisted, current) => {
+        const merged = { ...current, ...(persisted as Partial<RightPanelStoreState>) };
+        return { ...merged, byThreadKey: removeUnknownExtensionPanels(merged.byThreadKey) };
+      },
     },
   ),
 );

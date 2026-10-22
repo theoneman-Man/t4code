@@ -63,6 +63,8 @@ import {
 } from "./ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { useThreadRouteRef } from "../hooks/useThreadRouteTarget";
+import { ExtensionWorkspaceOutlet } from "../extensions/Workspace";
+import { ExtensionNavigationBridge } from "../extensions/navigation";
 
 const MACOS_TRAFFIC_LIGHTS_LEFT_INSET = "var(--desktop-window-controls-inset, 90px)";
 
@@ -428,7 +430,8 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
           )}
           <SidebarRail onDoubleClick={resetSidebarWidth} />
         </Sidebar>
-        {children}
+        <ExtensionNavigationBridge />
+        <ExtensionWorkspaceOutlet>{children}</ExtensionWorkspaceOutlet>
         <SidebarControl />
         <NavigationHistoryShortcuts />
         {isOnSettings ? null : <ThreadUndoShortcut />}

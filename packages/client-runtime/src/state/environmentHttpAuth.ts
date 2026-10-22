@@ -6,7 +6,7 @@ import {
 } from "@t3tools/contracts";
 import * as Result from "effect/Result";
 import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
-import { FetchHttpClient, type HttpMethod } from "effect/http";
+import { FetchHttpClient, type HttpMethod, type HttpClient } from "effect/http";
 
 import type { RemoteEnvironmentAuthorization } from "../authorization/service.ts";
 import type { PreparedConnection, PreparedHttpAuthorization } from "../connection/model.ts";
@@ -35,6 +35,39 @@ export function withOrchestrationProtocolHeader(
     [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT,
   };
 }
+
+type RequestOptions<A> = {
+  readonly prepared: PreparedConnection;
+  readonly signer: Option.Option<ManagedRelayDpopSigner["Service"]>;
+  readonly remoteAuthorization?: Option.Option<RemoteEnvironmentAuthorization["Service"]>;
+  readonly method: HttpMethod.HttpMethod;
+  readonly timeoutMs: number;
+  /** Some endpoints report rejected credentials in a successful response. */
+  readonly isUnauthorizedResponse?: (response: NoInfer<A>) => boolean;
+};
+
+type GroupRequest<
+  Group extends Parameters<typeof makeEnvironmentHttpApiGroupClient>[1],
+  A,
+  E,
+  R,
+> = {
+  readonly group: Group;
+  // Use the contract's encoding so the proof signs the URL actually sent by the client.
+  readonly url: (urls: ReturnType<typeof makeEnvironmentHttpApiUrlBuilder>[Group]) => string;
+  readonly request: (input: {
+    readonly client: Effect.Success<ReturnType<typeof makeEnvironmentHttpApiGroupClient<Group>>>;
+    readonly headers: EnvironmentHttpAuthHeaders;
+  }) => Effect.Effect<A, E, R>;
+};
+
+type PathRequest<A, E, R> = {
+  readonly group?: never;
+  readonly urlForBase: (httpBaseUrl: string) => string;
+  readonly request: (input: {
+    readonly headers: EnvironmentHttpAuthHeaders;
+  }) => Effect.Effect<A, E, R>;
+};
 
 /**
  * Primary/local environments with no bearer or DPoP credential authenticate the
@@ -91,20 +124,32 @@ const buildEnvironmentAuthHeaders = Effect.fn("environmentHttpAuth.buildEnvironm
  * the environment continues; its local caller's span would leave that trace
  * without a root.
  */
-export const executeAuthenticatedEnvironmentHttpRequest = <
+export function executeAuthenticatedEnvironmentHttpRequest<
   Group extends Parameters<typeof makeEnvironmentHttpApiGroupClient>[1],
   A,
   E,
   R,
 >(
-  input: Parameters<typeof executeEnvironmentRequest<Group, A, E, R>>[0],
-) =>
-  input.prepared.httpAuthorization?._tag === "Dpop"
-    ? executeEnvironmentRequest(input).pipe(
+  input: RequestOptions<A> & GroupRequest<Group, A, E, R>,
+): Effect.Effect<A, RemoteEnvironmentRequestError, HttpClient.HttpClient | R>;
+export function executeAuthenticatedEnvironmentHttpRequest<A, E, R>(
+  input: RequestOptions<A> & PathRequest<A, E, R>,
+): Effect.Effect<A, RemoteEnvironmentRequestError, HttpClient.HttpClient | R>;
+export function executeAuthenticatedEnvironmentHttpRequest<
+  Group extends Parameters<typeof makeEnvironmentHttpApiGroupClient>[1],
+  A,
+  E,
+  R,
+>(input: RequestOptions<A> & (GroupRequest<Group, A, E, R> | PathRequest<A, E, R>)) {
+  return input.prepared.httpAuthorization?._tag === "Dpop"
+    ? executeEnvironmentRequest<Group, A, E, R>(input).pipe(
         Effect.withSpan(ENVIRONMENT_REQUEST_SPAN, { root: true }),
         withRelayClientTracing,
       )
-    : executeEnvironmentRequest(input).pipe(Effect.withSpan(ENVIRONMENT_REQUEST_SPAN));
+    : executeEnvironmentRequest<Group, A, E, R>(input).pipe(
+        Effect.withSpan(ENVIRONMENT_REQUEST_SPAN),
+      );
+}
 
 const ENVIRONMENT_REQUEST_SPAN = "clientRuntime.state.executeAuthenticatedEnvironmentHttpRequest";
 
@@ -113,33 +158,18 @@ const executeEnvironmentRequest = Effect.fnUntraced(function* <
   A,
   E,
   R,
->(input: {
-  readonly prepared: PreparedConnection;
-  readonly signer: Option.Option<ManagedRelayDpopSigner["Service"]>;
-  readonly remoteAuthorization?: Option.Option<RemoteEnvironmentAuthorization["Service"]>;
-  readonly method: HttpMethod.HttpMethod;
-  /**
-   * The URL to sign, from the group's contract URL builder. It encodes path
-   * params exactly like the request client, so the DPoP proof matches the
-   * URL actually sent.
-   */
-  readonly url: (urls: ReturnType<typeof makeEnvironmentHttpApiUrlBuilder>[Group]) => string;
-  readonly timeoutMs: number;
-  readonly group: Group;
-  readonly request: (input: {
-    readonly client: Effect.Success<ReturnType<typeof makeEnvironmentHttpApiGroupClient<Group>>>;
-    readonly headers: EnvironmentHttpAuthHeaders;
-  }) => Effect.Effect<A, E, R>;
-  /** Some endpoints report rejected credentials in a successful response. */
-  readonly isUnauthorizedResponse?: (response: NoInfer<A>) => boolean;
-}): Effect.fn.Return<
+>(
+  input: RequestOptions<A> & (GroupRequest<Group, A, E, R> | PathRequest<A, E, R>),
+): Effect.fn.Return<
   A,
   RemoteEnvironmentRequestError,
   Effect.Services<ReturnType<typeof makeEnvironmentHttpApiGroupClient<Group>>> | R
 > {
   let httpBaseUrl = input.prepared.httpBaseUrl;
   const requestUrlFor = (baseUrl: string) =>
-    input.url(makeEnvironmentHttpApiUrlBuilder(baseUrl)[input.group]);
+    "urlForBase" in input
+      ? input.urlForBase(baseUrl)
+      : input.url(makeEnvironmentHttpApiUrlBuilder(baseUrl)[input.group]);
   return yield* Effect.gen(function* () {
     let rejectedAccessToken: string | undefined;
     for (;;) {
@@ -174,17 +204,23 @@ const executeEnvironmentRequest = Effect.fnUntraced(function* <
       }
 
       const requestUrl = requestUrlFor(httpBaseUrl);
-      const client = yield* makeEnvironmentHttpApiGroupClient(httpBaseUrl, input.group);
       const headers = yield* buildEnvironmentAuthHeaders(
         authorization,
         input.method,
         requestUrl,
         input.signer,
       );
+      const request =
+        "urlForBase" in input
+          ? input.request({ headers })
+          : input.request({
+              client: yield* makeEnvironmentHttpApiGroupClient(httpBaseUrl, input.group),
+              headers,
+            });
       const result = yield* executeEnvironmentHttpRequest(
         requestUrl,
         input.timeoutMs,
-        withEnvironmentCredentials(authorization, input.request({ client, headers })),
+        withEnvironmentCredentials(authorization, request),
       ).pipe(Effect.result);
 
       if (Result.isFailure(result)) {

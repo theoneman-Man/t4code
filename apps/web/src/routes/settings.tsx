@@ -1,4 +1,5 @@
 import { Outlet, createFileRoute, redirect, useLocation } from "@tanstack/react-router";
+import { ExtensionSettingsHeader, ExtensionSettingsOutlet } from "../extensions/Settings";
 import { useState, type ReactNode } from "react";
 import { RotateCcwIcon } from "lucide-react";
 import { Button } from "../components/ui/button";
@@ -123,20 +124,24 @@ function SettingsContentLayout() {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
         <WorkspacePageHeader electron={isElectron}>
           <div className="flex w-full items-center gap-3">
-            <SettingsBreadcrumb pathname={location.pathname} />
-            {location.pathname === "/settings/general" ? (
-              <div className="ms-auto flex shrink-0 items-center">
-                <RestoreDeviceDefaultsButton
-                  onRestored={() => setRestoreSignal((value) => value + 1)}
-                />
-              </div>
-            ) : null}
+            <ExtensionSettingsHeader>
+              <SettingsBreadcrumb pathname={location.pathname} />
+              {location.pathname === "/settings/general" ? (
+                <div className="ms-auto flex shrink-0 items-center">
+                  <RestoreDeviceDefaultsButton
+                    onRestored={() => setRestoreSignal((value) => value + 1)}
+                  />
+                </div>
+              ) : null}
+            </ExtensionSettingsHeader>
           </div>
         </WorkspacePageHeader>
 
         <div key={`${contentScopeKey}:${restoreSignal}`} className="min-h-0 flex flex-1 flex-col">
           <SettingsScopeBoundary pathname={location.pathname}>
-            <Outlet />
+            <ExtensionSettingsOutlet>
+              <Outlet />
+            </ExtensionSettingsOutlet>
           </SettingsScopeBoundary>
         </div>
       </div>

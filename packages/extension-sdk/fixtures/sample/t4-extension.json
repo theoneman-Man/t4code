@@ -1,0 +1,10 @@
+{
+  "id": "sample",
+  "sdk": 1,
+  "web": "./web/index.ts",
+  "backend": { "command": ["node", "./backend/server.mjs"], "cwd": ".", "protocol": 1 },
+  "routes": [
+    { "method": "GET", "path": "/**", "scope": "read" },
+    { "method": "*", "path": "/**", "scope": "operate" }
+  ]
+}

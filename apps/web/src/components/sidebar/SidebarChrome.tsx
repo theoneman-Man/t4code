@@ -30,6 +30,7 @@ import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 import { SidebarUpdateArchitectureWarning, SidebarUpdatePill } from "./SidebarUpdatePill";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { observeResize } from "~/lib/observeResize";
+import { withWorkspaceSwitcher } from "../../extensions/Workspace";
 
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron,
@@ -47,7 +48,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
       ? resolveEnvironmentIdentificationPillLabel(stageLabel)
       : null;
 
-  return (
+  return withWorkspaceSwitcher(
     <div
       className={cn(
         "relative flex h-[var(--workspace-topbar-height)] shrink-0 flex-row items-center gap-2 pr-3",
@@ -72,7 +73,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
           </div>
         ) : null}
       </div>
-    </div>
+    </div>,
   );
 });
 
