@@ -1,10 +1,17 @@
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import { AtomRegistry } from "effect/reactivity";
 import { EnvironmentId } from "@t3tools/contracts";
 import { fetchEnvironmentExtensionHttp } from "@t3tools/client-runtime/state/extension-http";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { connectionAtomRuntime } from "../connection/runtime";
-import { readPreparedConnection } from "../state/session";
+import { environmentSession } from "../state/session";
+
+class ExtensionConnectionTimeout extends Data.TaggedError("ExtensionConnectionTimeout") {
+  override readonly message = "Extension environment connection was not ready within 30 seconds.";
+}
 
 export function extensionPath(id: string, path: string) {
   if (!path.startsWith("/") || path.startsWith("//") || /[\\#]/.test(path))
@@ -22,11 +29,27 @@ export async function fetchEnvironmentPath(
   init: RequestInit = {},
 ) {
   const id = EnvironmentId.make(environmentId);
-  const prepared = readPreparedConnection(id);
-  if (!prepared) throw new Error("Connect to the extension's environment first.");
-  const atom = connectionAtomRuntime.atom(fetchEnvironmentExtensionHttp(prepared, path, init));
   const result = Effect.scoped(
     Effect.gen(function* () {
+      const prepared = yield* AtomRegistry.toStream(
+        appAtomRegistry,
+        environmentSession.preparedConnectionValueAtom(id),
+      ).pipe(
+        Stream.filter(Option.isSome),
+        Stream.map((value) => value.value),
+        Stream.runHead,
+        Effect.flatMap(
+          Option.match({
+            onSome: Effect.succeed,
+            onNone: () => Effect.never,
+          }),
+        ),
+        Effect.timeoutOrElse({
+          duration: "30 seconds",
+          orElse: () => Effect.fail(new ExtensionConnectionTimeout()),
+        }),
+      );
+      const atom = connectionAtomRuntime.atom(fetchEnvironmentExtensionHttp(prepared, path, init));
       yield* AtomRegistry.mount(appAtomRegistry, atom);
       return yield* AtomRegistry.getResult(appAtomRegistry, atom);
     }),

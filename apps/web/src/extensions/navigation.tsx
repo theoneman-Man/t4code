@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import { useThreadRouteRef } from "../hooks/useThreadRouteTarget";
 import { findExtensionSlot } from "./registry";
@@ -36,7 +36,18 @@ export function extensionHashKey(hash: string, kind: "workspace" | "settings") {
 export function ExtensionNavigationBridge() {
   const navigate = useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
+  const hash = useLocation({ select: (location) => location.hash });
+  const initialWorkspace = useRef(pathname === "/" ? extensionHashKey(hash, "workspace") : null);
   const threadRef = useThreadRouteRef();
+  useEffect(() => {
+    if (pathname === "/") return;
+    const workspace = initialWorkspace.current;
+    initialWorkspace.current = null;
+    // The index starts a draft asynchronously and its replace navigation omits the hash.
+    if (workspace && pathname.startsWith("/draft/") && !hash) {
+      void navigate({ to: pathname, hash: workspaceHash(workspace), search: true, replace: true });
+    }
+  }, [hash, navigate, pathname]);
   useEffect(() => {
     const listener = (event: Event) => {
       const detail = (event as CustomEvent<{ kind: "workspace" | "rightPanel"; id: string }>)
@@ -45,9 +56,12 @@ export function ExtensionNavigationBridge() {
         detail.kind === "workspace" &&
         (detail.id === "chat" || findExtensionSlot(detail.id, "workspace"))
       ) {
+        const target = pathname.startsWith("/settings") ? "/" : pathname;
+        initialWorkspace.current = target === "/" && detail.id !== "chat" ? detail.id : null;
         void navigate({
-          to: pathname.startsWith("/settings") ? "/" : pathname,
+          to: target,
           hash: workspaceHash(detail.id),
+          search: true,
         });
       }
       if (detail.kind === "rightPanel" && threadRef && findExtensionSlot(detail.id, "rightPanel")) {

@@ -114,6 +114,30 @@ it("retains a fixture draft and event stream when switching away and back", asyn
   );
 });
 
+it("keeps the chosen workspace across the initial draft redirect and still allows Chat and history", async () => {
+  const backend = fixtureBackend();
+  using _fetch = stubGlobal("fetch", backend.fetch);
+  await using screen = await render(<FixtureHost />);
+  await selectWorkspace("Sample workspace");
+  await expect.element(screen.getByText("hello from sample")).toBeVisible();
+  await act(() =>
+    screen.router!.navigate({
+      to: "/draft/$draftId",
+      params: { draftId: "initial" },
+      replace: true,
+    }),
+  );
+  await expect.element(screen.getByText("hello from sample")).toBeVisible();
+  expect(screen.router!.state.location.pathname).toBe("/draft/initial");
+  expect(screen.router!.state.location.hash).toBe("ext-workspace=sample%3Aworkspace");
+  await selectWorkspace("Chat");
+  await expect.element(screen.getByText("Chat content")).toBeVisible();
+  await act(() => screen.router!.history.back());
+  await expect.element(screen.getByText("hello from sample")).toBeVisible();
+  await act(() => screen.router!.history.forward());
+  await expect.element(screen.getByText("Chat content")).toBeVisible();
+});
+
 it("contains render failures at the slot boundary", async () => {
   const entry = extensionSlots[0]!;
   const Throwing = () => {
