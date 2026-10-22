@@ -1,3 +1,8 @@
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -124,6 +129,25 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
       ]);
     }),
   );
+  it.effect("reports safe startup diagnostics from stderr without exposing raw text", () =>
+    Effect.gen(function* () {
+      const handle = yield* makeHandle({ CODEX_APP_SERVER_TEST_STARTUP_FAILURE: "1" });
+      const context = yield* Layer.build(CodexClient.layerChildProcess(handle));
+      const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
+        Effect.provide(context),
+      );
+      const error = yield* client
+        .request("initialize", {
+          clientInfo: { name: "test", title: "Test", version: "0.0.0" },
+          capabilities: { experimentalApi: true, optOutNotificationMethods: null },
+        })
+        .pipe(Effect.flip);
+      assert.include(error.message, "memory");
+      assert.notInclude(JSON.stringify(error), "private-token");
+      assert.notInclude(JSON.stringify(error), "do-not-publish");
+      assert.equal(error._tag, "CodexAppServerProcessExitedError");
+    }),
+  );
   it.effect("drains child stderr so large diagnostics cannot block protocol responses", () =>
     Effect.gen(function* () {
       const handle = yield* makeHandle({
@@ -156,3 +180,38 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
     }),
   );
 });
+
+it.effect("does not wait for a descendant that keeps the stderr pipe open", () =>
+  Effect.gen(function* () {
+    const drainStarted = yield* Deferred.make<void>();
+    const handle = ChildProcessSpawner.makeHandle({
+      pid: ChildProcessSpawner.ProcessId(42),
+      exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
+      isRunning: Effect.succeed(false),
+      kill: () => Effect.void,
+      stdin: Sink.drain,
+      stdout: Stream.empty,
+      stderr: Stream.fromEffect(Deferred.succeed(drainStarted, undefined)).pipe(
+        Stream.drain,
+        Stream.concat(Stream.never),
+      ),
+      all: Stream.empty,
+      getInputFd: () => Sink.drain,
+      getOutputFd: () => Stream.empty,
+      unref: Effect.succeed(Effect.void),
+    });
+    const context = yield* Layer.build(CodexClient.layerChildProcess(handle));
+    const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
+      Effect.provide(context),
+    );
+    const request = yield* client
+      .request("initialize", {
+        clientInfo: { name: "test", title: "Test", version: "0.0.0" },
+        capabilities: { experimentalApi: true, optOutNotificationMethods: null },
+      })
+      .pipe(Effect.flip, Effect.forkScoped);
+    yield* Deferred.await(drainStarted);
+    yield* TestClock.adjust("250 millis");
+    assert.equal((yield* Fiber.join(request))._tag, "CodexAppServerProcessExitedError");
+  }),
+);

@@ -1,3 +1,4 @@
+import { hostDesktopIconPath } from "../hostBranding.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -78,6 +79,8 @@ function resolveSourceTreeIconPath(
   environment: DesktopEnvironment.DesktopEnvironment["Service"],
   ext: keyof DesktopIconPaths,
 ): string | undefined {
+  const hostIcon = hostDesktopIconPath(environment, ext);
+  if (hostIcon) return hostIcon;
   if (environment.isPackaged || ext === "icns") return undefined;
   const brand = environment.isDevelopment ? "dev" : "prod";
   const fileNames = sourceTreeIconFileNames[brand];

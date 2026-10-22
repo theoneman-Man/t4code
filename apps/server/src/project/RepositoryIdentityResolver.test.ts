@@ -1,3 +1,5 @@
+import * as TestClock from "effect/testing/TestClock";
+import { ChildProcessSpawner } from "effect/process";
 // @effect-diagnostics nodeBuiltinImport:off - realpathSync.native resolves Windows 8.3 short names, which the Effect realPath does not.
 import * as NodeFS from "node:fs";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -288,3 +290,35 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
     }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
   );
 });
+
+it.effect("caches negative Git roots until expiry and allows explicit refresh", () =>
+  Effect.gen(function* () {
+    let probes = 0;
+    const resolver = yield* RepositoryIdentityResolver.make().pipe(
+      Effect.provideService(ProcessRunner.ProcessRunner, {
+        run: () =>
+          Effect.sync(() => {
+            probes++;
+            return {
+              stdout: "",
+              stderr: "fatal: not a git repository",
+              code: ChildProcessSpawner.ExitCode(128),
+              timedOut: false,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              stdoutInvalidUtf8: false,
+              stderrInvalidUtf8: false,
+            };
+          }),
+      }),
+    );
+    expect(yield* resolver.resolve("non-repository")).toBeNull();
+    expect(yield* resolver.resolve("non-repository")).toBeNull();
+    expect(probes).toBe(3);
+    yield* TestClock.adjust("1 minute");
+    expect(yield* resolver.resolve("non-repository")).toBeNull();
+    expect(probes).toBe(6);
+    expect(yield* resolver.resolve("non-repository", { refresh: true })).toBeNull();
+    expect(probes).toBe(9);
+  }),
+);

@@ -1,45 +1,28 @@
-// Node owns subprocess handles, inherited log descriptors and loopback port allocation here.
-// @effect-diagnostics nodeBuiltinImport:off
-import * as NodeChildProcess from "node:child_process";
-import * as NodeCrypto from "node:crypto";
-import * as NodeFSP from "node:fs/promises";
-import * as NodeNet from "node:net";
+// @effect-diagnostics nodeBuiltinImport:off -- Resolve the optional Node host list at startup.
 import * as NodePath from "node:path";
+import * as NodeFS from "node:fs";
 import * as NodeURL from "node:url";
 import { EXTENSION_LIST_FILE } from "@t3tools/extension-sdk/manifest";
 import { loadExtensions, type ResolvedExtension } from "@t3tools/extension-sdk/node";
-import {
-  EXTENSION_BACKEND_ENV,
-  EXTENSION_READY_PATH,
-  EXTENSION_READY_TIMEOUT_MS,
-  type ExtensionBackendState,
-  type ExtensionStatus,
-  type ExtensionStatusResponse,
+import * as BackendSupervisor from "@t3tools/extension-sdk/host";
+import type { ReadyBackendDescriptor } from "@t3tools/extension-sdk/host";
+import type {
+  ExtensionBackendState,
+  ExtensionStatus,
+  ExtensionStatusResponse,
 } from "@t3tools/extension-sdk/protocol";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
-import type * as Scope from "effect/Scope";
-import { HttpClient, HttpClientResponse, FetchHttpClient } from "effect/http";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ServerConfig from "../config.ts";
 import { routeScope } from "./proxy.ts";
-import * as BackendSupervisor from "./BackendSupervisor.ts";
-
-/** A desktop-owned backend is borrowed; the server never spawns or stops it. */
-export interface ReadyBackendDescriptor {
-  readonly extensionId: string;
-  readonly url: string;
-  readonly token: string;
-  readonly instanceId: string;
-  readonly dataDir: string;
-}
 
 export interface HostOptions {
-  /** Development source root for now; packaged hosts supply their own root/list. */
+  /** Packaged hosts may supply an explicit root/list. */
   readonly hostRoot?: string;
+  readonly moduleUrl?: URL;
   readonly listFile?: string;
   readonly descriptors?: readonly ReadyBackendDescriptor[];
 }
@@ -55,17 +38,6 @@ class ExtensionHostError extends Schema.TaggedError<ExtensionHostError>()("Exten
 }) {
   override get message() {
     return "Extension backend operation failed.";
-  }
-}
-
-class ExtensionBackendUnavailableError extends Schema.TaggedError<ExtensionBackendUnavailableError>()(
-  "ExtensionBackendUnavailableError",
-  {
-    reason: Schema.Literals(["identity_mismatch", "exited"]),
-  },
-) {
-  override get message() {
-    return "Extension backend is unavailable.";
   }
 }
 
@@ -85,7 +57,16 @@ export class ExtensionHost extends Context.Service<
   }
 >()("t3/extensions/ExtensionHost") {}
 
-const sourceRoot = NodeURL.fileURLToPath(new URL("../../../../", import.meta.url));
+const resolveHostRoot = (moduleUrl: URL) => {
+  const moduleDirectory = NodePath.dirname(NodeURL.fileURLToPath(moduleUrl));
+  let directory = moduleDirectory;
+  while (true) {
+    if (NodeFS.existsSync(NodePath.join(directory, "pnpm-workspace.yaml"))) return directory;
+    const parent = NodePath.dirname(directory);
+    if (parent === directory) return moduleDirectory;
+    directory = parent;
+  }
+};
 
 const loadFailureReason = (cause: unknown) => {
   // Loader errors can contain JSON excerpts or manifest values. Log only fixed categories.
@@ -98,115 +79,18 @@ const loadFailureReason = (cause: unknown) => {
   if (/EISDIR/.test(message)) return "Extension configuration must be a file.";
   return "Extension list or manifest validation failed.";
 };
-const readySchema = Schema.Struct({
-  protocol: Schema.Literal(1),
-  extensionId: Schema.String,
-  instanceId: Schema.String,
-  dataDir: Schema.String,
-});
-
-const freePort = Effect.fn("ExtensionHost.freePort")(function* () {
-  return yield* Effect.acquireUseRelease(
-    Effect.callback<{ server: NodeNet.Server; port: number }, ExtensionHostError>((resume) => {
-      const server = NodeNet.createServer();
-      server.once("error", (cause) =>
-        resume(Effect.fail(new ExtensionHostError({ stage: "launch", cause }))),
-      );
-      server.listen(0, "127.0.0.1", () => {
-        const address = server.address();
-        if (address && typeof address !== "string")
-          resume(Effect.succeed({ server, port: address.port }));
-      });
-    }),
-    ({ port }) => Effect.succeed(port),
-    ({ server }) =>
-      Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))),
-  );
-});
-
-export function backendEnvironment(
-  inherited: NodeJS.ProcessEnv,
-  descriptor: ReadyBackendDescriptor,
-) {
-  const env = Object.fromEntries(
-    Object.entries(inherited).filter(([name]) => !/^T[34](?:_|CODE_)/i.test(name)),
-  );
-  return {
-    ...env,
-    [EXTENSION_BACKEND_ENV.id]: descriptor.extensionId,
-    [EXTENSION_BACKEND_ENV.port]: new URL(descriptor.url).port,
-    [EXTENSION_BACKEND_ENV.token]: descriptor.token,
-    [EXTENSION_BACKEND_ENV.dataDir]: descriptor.dataDir,
-    [EXTENSION_BACKEND_ENV.instance]: descriptor.instanceId,
-  };
-}
-
-const probe = Effect.fn("ExtensionHost.probe")(function* (descriptor: ReadyBackendDescriptor) {
-  const client = yield* HttpClient.HttpClient;
-  const body = yield* Effect.scoped(
-    HttpClient.withScope(client)
-      .get(`${descriptor.url}${EXTENSION_READY_PATH}`, {
-        headers: { authorization: `Bearer ${descriptor.token}` },
-      })
-      .pipe(
-        Effect.flatMap(HttpClientResponse.filterStatusOk),
-        Effect.flatMap((response) => response.json),
-        Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
-      ),
-  ).pipe(Effect.retry({ schedule: Schedule.spaced("100 millis") }));
-  const ready = yield* Schema.decodeUnknownEffect(readySchema)(body).pipe(
-    Effect.mapError((cause) => new ExtensionHostError({ stage: "identity", cause })),
-  );
-  if (
-    ready.extensionId !== descriptor.extensionId ||
-    ready.instanceId !== descriptor.instanceId ||
-    ready.dataDir !== descriptor.dataDir
-  ) {
-    return yield* new ExtensionBackendUnavailableError({ reason: "identity_mismatch" });
-  }
-}, Effect.timeout(EXTENSION_READY_TIMEOUT_MS));
-
-const stopChild = Effect.fn("ExtensionHost.stopChild")(function* (
-  child: NodeChildProcess.ChildProcess,
-  exited: Promise<void>,
-) {
-  const platform = yield* HostProcess.Platform;
-  if (child.exitCode === null && child.signalCode === null && child.pid !== undefined) {
-    if (platform === "win32") {
-      yield* Effect.promise(
-        () =>
-          new Promise<void>((resolve) => {
-            const killer = NodeChildProcess.spawn(
-              "taskkill",
-              ["/PID", String(child.pid), "/T", "/F"],
-              {
-                windowsHide: true,
-                stdio: "ignore",
-              },
-            );
-            killer.once("error", () => {
-              child.kill();
-              resolve();
-            });
-            killer.once("exit", () => {
-              child.kill();
-              resolve();
-            });
-          }),
-      );
-    } else {
-      child.kill("SIGKILL");
-    }
-  }
-  yield* Effect.promise(() => exited);
-});
-
 const make = Effect.fn("ExtensionHost.make")(function* (options: HostOptions) {
   const config = yield* ServerConfig.ServerConfig;
   const inherited = yield* HostProcess.Environment;
   const executable = yield* HostProcess.ExecutablePath;
-  const hostRoot = options.hostRoot ?? sourceRoot;
-  const listFile = options.listFile ?? NodePath.join(hostRoot, EXTENSION_LIST_FILE);
+  const platform = yield* HostProcess.Platform;
+  const hostRoot =
+    options.hostRoot ?? resolveHostRoot(options.moduleUrl ?? new URL(import.meta.url));
+  const listFile =
+    options.listFile ??
+    config.extensionHost?.listFile ??
+    NodePath.join(hostRoot, EXTENSION_LIST_FILE);
+  const descriptors = options.descriptors ?? config.extensionHost?.backends;
   const extensions = yield* Effect.try({
     try: () => loadExtensions(hostRoot, listFile),
     catch: (cause) => new ExtensionHostError({ stage: "load", cause }),
@@ -248,70 +132,10 @@ const make = Effect.fn("ExtensionHost.make")(function* (options: HostOptions) {
       }),
   );
 
-  const launch = Effect.fn("ExtensionHost.launch")(function* (
-    extension: ResolvedExtension,
-    ready: Effect.Effect<void, never, Scope.Scope>,
-  ) {
-    const id = extension.manifest.id;
-    const port = yield* freePort();
-    const descriptor: ReadyBackendDescriptor = {
-      extensionId: id,
-      url: `http://127.0.0.1:${port}`,
-      token: NodeCrypto.randomBytes(32).toString("base64url"),
-      instanceId: NodeCrypto.randomUUID(),
-      dataDir: extension.dataDir ?? NodePath.join(config.stateDir, "extensions", id),
-    };
-    const logDir = NodePath.join(config.logsDir, "extensions");
-    yield* Effect.tryPromise({
-      try: () =>
-        Promise.all([
-          NodeFSP.mkdir(descriptor.dataDir, { recursive: true }),
-          NodeFSP.mkdir(logDir, { recursive: true }),
-        ]),
-      catch: (cause) => new ExtensionHostError({ stage: "launch", cause }),
-    });
-    const log = yield* Effect.acquireRelease(
-      Effect.tryPromise({
-        try: () => NodeFSP.open(NodePath.join(logDir, `${id}.log`), "a"),
-        catch: (cause) => new ExtensionHostError({ stage: "launch", cause }),
-      }),
-      (file) => Effect.promise(() => file.close()),
-    );
-    const processHandle = yield* Effect.acquireRelease(
-      Effect.try({
-        try: () => {
-          const [command, ...args] = extension.manifest.backend!.command;
-          const child = NodeChildProcess.spawn(command === "node" ? executable : command, args, {
-            cwd: extension.backendCwd,
-            env: backendEnvironment(inherited, descriptor),
-            shell: false,
-            windowsHide: true,
-            stdio: ["ignore", log.fd, log.fd],
-          });
-          const exited = new Promise<void>((resolve) => child.once("close", () => resolve()));
-          // Consume spawn errors immediately, before readiness opens its first connection.
-          child.on("error", () => {});
-          return { child, exited };
-        },
-        catch: (cause) => new ExtensionHostError({ stage: "launch", cause }),
-      }),
-      ({ child, exited }) => stopChild(child, exited),
-    );
-    yield* Effect.raceFirst(
-      probe(descriptor),
-      Effect.promise(() => processHandle.exited).pipe(
-        Effect.andThen(Effect.fail(new ExtensionBackendUnavailableError({ reason: "exited" }))),
-      ),
-    );
-    yield* ready;
-    yield* setState(id, "ready", descriptor);
-    yield* Effect.promise(() => processHandle.exited);
-  });
-
   for (const extension of extensions) {
     if (!extension.manifest.backend) continue;
     const id = extension.manifest.id;
-    const borrowed = options.descriptors?.find((descriptor) => descriptor.extensionId === id);
+    const borrowed = descriptors?.find((descriptor) => descriptor.extensionId === id);
     const supervise = borrowed
       ? Effect.gen(function* () {
           const url = URL.parse(borrowed.url);
@@ -328,18 +152,39 @@ const make = Effect.fn("ExtensionHost.make")(function* (options: HostOptions) {
             return yield* setState(id, "failed", undefined, "Invalid backend descriptor.");
           }
           const descriptor = { ...borrowed, url: url.origin };
-          yield* probe(descriptor).pipe(
+          // Desktop preserves this authenticated endpoint across launches; refresh only the instance identity.
+          yield* BackendSupervisor.probe(descriptor, true).pipe(
             Effect.matchEffect({
-              onSuccess: () => setState(id, "ready", descriptor),
+              onSuccess: (current) => setState(id, "ready", current),
               onFailure: () => setState(id, "failed", undefined, "Backend readiness failed."),
             }),
           );
           return yield* Effect.never;
         })
-      : BackendSupervisor.supervise(
-          (ready) => launch(extension, ready),
-          (state, message) => setState(id, state, undefined, message),
-        );
+      : descriptors !== undefined
+        ? setState(
+            id,
+            "failed",
+            undefined,
+            config.extensionHost?.failures?.find((failure) => failure.extensionId === id)
+              ?.message ?? "Desktop backend unavailable.",
+          )
+        : BackendSupervisor.supervise(
+            (ready) =>
+              BackendSupervisor.launch(
+                extension,
+                ready,
+                {
+                  platform,
+                  stateDir: config.stateDir,
+                  logsDir: config.logsDir,
+                  environment: inherited,
+                  executable,
+                },
+                (descriptor) => setState(id, "ready", descriptor),
+              ),
+            (state, message) => setState(id, state, undefined, message),
+          );
     yield* Effect.addFinalizer(() => setState(id, "stopped"));
     yield* supervise.pipe(Effect.forkScoped);
   }

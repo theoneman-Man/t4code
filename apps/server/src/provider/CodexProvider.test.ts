@@ -1,3 +1,9 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { resolveCodexExecutable } from "./Drivers/CodexExecutable.ts";
 import { assert, it } from "@effect/vitest";
 
 import { applyPreferredCodexDefaultModel, mapCodexModelCapabilities } from "./CodexProvider.ts";
@@ -153,3 +159,37 @@ it("ignores custom models that shadow a preferred slug", () => {
 
   assert.deepStrictEqual(models.find((model) => model.isDefault)?.slug, "gpt-5.4");
 });
+
+it.effect("discovers a Windows desktop Codex binary instead of a broken PATH launcher", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "codex-discovery-" });
+    const directory = path.join(root, "OpenAI", "Codex", "bin", "release-1");
+    yield* fs.makeDirectory(directory, { recursive: true });
+    const executable = path.join(directory, "codex.exe");
+    yield* fs.writeFileString(executable, "fixture");
+    const newerDirectory = path.join(root, "OpenAI", "Codex", "bin", "release-2");
+    yield* fs.makeDirectory(newerDirectory, { recursive: true });
+    const newer = path.join(newerDirectory, "codex.exe");
+    yield* fs.writeFileString(newer, "newer-fixture");
+    yield* fs.utimes(executable, 1, 1);
+    yield* fs.utimes(newer, 2, 2);
+    assert.equal(yield* resolveCodexExecutable("codex", { localappdata: root }), newer);
+    assert.equal(yield* resolveCodexExecutable("codex.exe", { LOCALAPPDATA: root }), newer);
+    assert.equal(
+      yield* resolveCodexExecutable("codex", { LOCALAPPDATA: path.join(root, "missing") }),
+      "codex",
+    );
+    assert.equal(
+      yield* resolveCodexExecutable("custom-codex", { LOCALAPPDATA: root }),
+      "custom-codex",
+    );
+    assert.equal(
+      yield* resolveCodexExecutable("codex", {}).pipe(
+        Effect.provideService(HostProcess.Platform, "linux"),
+      ),
+      "codex",
+    );
+  }).pipe(Effect.provideService(HostProcess.Platform, "win32"), Effect.provide(NodeServices.layer)),
+);

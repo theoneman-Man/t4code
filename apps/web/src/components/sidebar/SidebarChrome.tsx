@@ -30,6 +30,7 @@ import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 import { SidebarUpdateArchitectureWarning, SidebarUpdatePill } from "./SidebarUpdatePill";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { observeResize } from "~/lib/observeResize";
+import { hostSidebarBrand } from "../../extensions/HostBrand";
 import { withWorkspaceSwitcher } from "../../extensions/Workspace";
 
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
@@ -117,7 +118,7 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
 }
 
 function SidebarBrandMark({ onBackdrop }: { onBackdrop: boolean }) {
-  return (
+  return hostSidebarBrand(
     <span className="inline-flex min-w-0 items-baseline gap-1 text-sm font-medium tracking-tight">
       <T3Wordmark aria-label="T3" className="h-[1cap] w-auto shrink-0" />
       <span
@@ -128,7 +129,7 @@ function SidebarBrandMark({ onBackdrop }: { onBackdrop: boolean }) {
       >
         Code
       </span>
-    </span>
+    </span>,
   );
 }
 

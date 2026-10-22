@@ -1,3 +1,12 @@
+// @effect-diagnostics nodeBuiltinImport:off -- The bootstrap fixture must provide a real inherited-style file descriptor.
+import * as NodeFS from "node:fs";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { DesktopBackendBootstrap } from "@t3tools/contracts";
+import type { ReadyBackendDescriptor } from "@t3tools/extension-sdk/host";
+import * as ConfigProvider from "effect/ConfigProvider";
+import * as Schema from "effect/Schema";
+import * as NetService from "@t3tools/shared/Net";
+import { resolveServerConfig, type CliServerFlags } from "../cli/config.ts";
 import * as NodeURL from "node:url";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -30,6 +39,7 @@ import * as ServerHttp from "../http.ts";
 import * as ExtensionHost from "./ExtensionHost.ts";
 import * as ExtensionHttp from "./http.ts";
 
+const encodeBootstrap = Schema.encodeEffect(Schema.fromJsonString(DesktopBackendBootstrap));
 const fixtureRoot = NodeURL.fileURLToPath(
   new URL("../../../../packages/extension-sdk/fixtures/sample", import.meta.url),
 );
@@ -37,17 +47,74 @@ const fixtureRoot = NodeURL.fileURLToPath(
 const harness = Effect.fn("ExtensionTest.harness")(function* (
   empty = false,
   listContents?: string,
+  descriptors?: readonly ReadyBackendDescriptor[],
+  dist = false,
+  failures?: { extensionId: string; message: string }[],
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-extension-" });
+  const directory = yield* fs.makeTempDirectoryScoped({
+    prefix: "t3-extension-",
+  });
   const listFile = path.join(directory, "t4.extensions.json");
   const dataDir = path.join(directory, "data");
+  const runtimeRoot = descriptors === undefined ? directory : path.join(directory, "runtime");
+  const moduleUrl = NodeURL.pathToFileURL(path.join(runtimeRoot, "apps/server/dist/bin.mjs"));
+  if (dist) {
+    yield* fs.makeDirectory(runtimeRoot, { recursive: true });
+    yield* fs.writeFileString(path.join(runtimeRoot, "pnpm-workspace.yaml"), "packages: []");
+  }
   if (!empty) yield* fs.writeFileString(listFile, JSON.stringify([{ path: fixtureRoot, dataDir }]));
   if (listContents !== undefined) yield* fs.writeFileString(listFile, listContents);
+  let configLayer = ServerConfig.layerTest(directory, path.join(directory, "home"));
+  if (descriptors !== undefined) {
+    const envelopePath = path.join(directory, "bootstrap.ndjson");
+    const envelope = {
+      mode: "desktop" as const,
+      noBrowser: true,
+      port: 4888,
+      t3Home: path.join(directory, "home"),
+      host: "127.0.0.1",
+      desktopBootstrapToken: "test-bootstrap-token",
+      tailscaleServeEnabled: false,
+      tailscaleServePort: 443,
+      extensionHost: { listFile, backends: descriptors, ...(failures ? { failures } : {}) },
+    };
+    const encoded = yield* encodeBootstrap(envelope);
+    yield* fs.writeFileString(envelopePath, encoded + "\n");
+    const platform = yield* HostProcess.Platform;
+    const fd = yield* Effect.acquireRelease(
+      Effect.sync(() => NodeFS.openSync(envelopePath, "r")),
+      // Windows streams consume the original fd; POSIX streams reopen /proc or /dev/fd.
+      (fd) => (platform === "win32" ? Effect.void : Effect.sync(() => NodeFS.closeSync(fd))),
+    );
+    const flags = {
+      mode: Option.none(),
+      port: Option.none(),
+      host: Option.none(),
+      baseDir: Option.none(),
+      cwd: Option.some(directory),
+      devUrl: Option.none(),
+      noBrowser: Option.none(),
+      bootstrapFd: Option.some(fd),
+      autoBootstrapProjectFromCwd: Option.none(),
+      logWebSocketEvents: Option.none(),
+      tailscaleServeEnabled: Option.none(),
+      tailscaleServePort: Option.none(),
+    } satisfies CliServerFlags;
+    const config = yield* resolveServerConfig(flags, Option.none()).pipe(
+      Effect.provide(
+        Layer.mergeAll(NetService.layer, ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+      ),
+    );
+    expect(config.extensionHost).toEqual(envelope.extensionHost);
+    configLayer = ServerConfig.layer(config);
+  }
   const dependencies = Layer.mergeAll(
     ExtensionHost.layer.pipe(
-      Layer.provide(Layer.succeed(ExtensionHost.Options, { hostRoot: directory })),
+      Layer.provide(
+        Layer.succeed(ExtensionHost.Options, dist ? { moduleUrl } : { hostRoot: directory }),
+      ),
       Layer.provide(FetchHttpClient.layer),
     ),
     EnvironmentAuth.layer.pipe(
@@ -55,10 +122,7 @@ const harness = Effect.fn("ExtensionTest.harness")(function* (
       Layer.provide(ServerSecretStore.layer),
       Layer.provide(ServerEnvironment.layerIdentity),
     ),
-  ).pipe(
-    Layer.provideMerge(ServerConfig.layerTest(directory, path.join(directory, "home"))),
-    Layer.provideMerge(NodeServices.layer),
-  );
+  ).pipe(Layer.provideMerge(configLayer), Layer.provideMerge(NodeServices.layer));
   const services = yield* Layer.build(
     HttpRouter.serve(
       Layer.merge(
@@ -165,6 +229,24 @@ it.live("starts, authorizes, streams ticks, restarts and stops the real backend"
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
+it.live("a headless dist module walks up to the workspace list and serves the backend", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { host, client, read, dataDir } = yield* harness(false, undefined, undefined, true);
+      yield* host.awaitState("sample", "ready");
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      expect(yield* fs.exists(path.join(dataDir, "backend.pid"))).toBe(true);
+      expect(yield* (yield* client.get("/api/extensions", { headers: read })).json).toEqual({
+        extensions: [{ id: "sample", backend: "ready" }],
+      });
+      expect(yield* (yield* client.get("/ext/sample/hello", { headers: read })).json).toEqual({
+        message: "hello from sample",
+      });
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
 it.live("a missing list leaves no extensions and authenticates the empty routes", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -174,6 +256,33 @@ it.live("a missing list leaves no extensions and authenticates the empty routes"
       expect(yield* status.json).toEqual({ extensions: [] });
       expect((yield* client.get("/ext/sample/hello", { headers: read })).status).toBe(404);
       expect((yield* client.get("/api/extensions")).status).toBe(401);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("a distribution without a workspace marker never loads a list from server home", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "extension-install-" });
+      const home = path.join(directory, "home");
+      yield* fs.makeDirectory(home);
+      yield* fs.writeFileString(
+        path.join(home, "t4.extensions.json"),
+        JSON.stringify([fixtureRoot]),
+      );
+      const services = yield* Layer.build(
+        ExtensionHost.layerWithOptions({
+          moduleUrl: NodeURL.pathToFileURL(path.join(directory, "install/dist/bin.mjs")),
+        }).pipe(
+          Layer.provide(ServerConfig.layerTest(directory, home)),
+          Layer.provide(FetchHttpClient.layer),
+        ),
+      );
+      expect(yield* Context.get(services, ExtensionHost.ExtensionHost).status).toEqual({
+        extensions: [],
+      });
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
 );
@@ -220,7 +329,9 @@ it.live("rejects a mismatched borrowed readiness identity without launching a ch
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-extension-failure-" });
+      const directory = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-extension-failure-",
+      });
       const dataDir = path.join(directory, "data");
       const listFile = path.join(directory, "t4.extensions.json");
       yield* fs.writeFileString(listFile, JSON.stringify([{ path: fixtureRoot, dataDir }]));
@@ -272,23 +383,81 @@ it.live("rejects a mismatched borrowed readiness identity without launching a ch
   ).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it("removes inherited host credentials before launching", () => {
-  const env = ExtensionHost.backendEnvironment(
-    { PATH: "bin", T3CODE_DEV_AUTH_TOKEN: "host", T4_TOKEN: "host", T4_EXT_TOKEN: "old" },
-    {
-      extensionId: "sample",
-      url: "http://127.0.0.1:1234",
-      token: "launch",
-      instanceId: "instance",
-      dataDir: "/data",
-    },
-  );
-  expect(env).toEqual({
-    PATH: "bin",
-    T4_EXT_ID: "sample",
-    T4_EXT_PORT: "1234",
-    T4_EXT_TOKEN: "launch",
-    T4_EXT_INSTANCE: "instance",
-    T4_EXT_DATA_DIR: "/data",
-  });
-});
+it.live(
+  "dist bootstrap list and descriptors serve a ready proxy without spawning or stopping the owner",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { host: owner, dataDir } = yield* harness();
+        yield* owner.awaitState("sample", "ready");
+        const descriptor = yield* owner.backend("sample");
+        if (!descriptor) return yield* Effect.die("Missing owner descriptor");
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const pid = Number(yield* fs.readFileString(path.join(dataDir, "backend.pid")));
+        for (const _restart of [0, 1]) {
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const handoff =
+                _restart === 0 ? descriptor : { ...descriptor, instanceId: "previous-launch" };
+              const { host, client, read, config } = yield* harness(
+                false,
+                undefined,
+                [handoff],
+                true,
+              );
+              yield* host.awaitState("sample", "ready");
+              expect(yield* host.backend("sample")).toEqual(descriptor);
+              expect(yield* host.status).toEqual({
+                extensions: [{ id: "sample", backend: "ready" }],
+              });
+              expect(yield* (yield* client.get("/api/extensions", { headers: read })).json).toEqual(
+                {
+                  extensions: [{ id: "sample", backend: "ready" }],
+                },
+              );
+              const response = yield* client.get("/ext/sample/hello", { headers: read });
+              expect(yield* response.json).toEqual({ message: "hello from sample" });
+              expect(yield* fs.exists(path.join(config.logsDir, "extensions", "sample.log"))).toBe(
+                false,
+              );
+            }),
+          );
+          expect(() => process.kill(pid, 0)).not.toThrow();
+          expect(Number(yield* fs.readFileString(path.join(dataDir, "backend.pid")))).toBe(pid);
+        }
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "an empty desktop handoff prevents headless fallback for WSL or failed desktop launches",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { host, client, read, config } = yield* harness(false, undefined, []);
+        yield* host.awaitState("sample", "failed");
+        expect((yield* client.get("/ext/sample/hello", { headers: read })).status).toBe(503);
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        expect(yield* fs.exists(path.join(config.logsDir, "extensions", "sample.log"))).toBe(false);
+        expect(yield* host.backend("sample")).toBeUndefined();
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("reports the desktop Node lookup failure through extension status", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const message = "Node.js executable not found on the desktop shell PATH.";
+      const { host, client, read } = yield* harness(false, undefined, [], true, [
+        { extensionId: "sample", message },
+      ]);
+      yield* host.awaitState("sample", "failed");
+      expect(yield* (yield* client.get("/api/extensions", { headers: read })).json).toEqual({
+        extensions: [{ id: "sample", backend: "failed", message }],
+      });
+      expect((yield* client.get("/ext/sample/hello", { headers: read })).status).toBe(503);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);

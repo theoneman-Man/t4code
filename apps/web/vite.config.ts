@@ -18,6 +18,7 @@ import {
 import { loadRepoEnv } from "../../scripts/lib/public-config";
 import { thirdPartyLicensesPlugin } from "../../scripts/lib/third-party-licenses";
 import { tailwindPlugins } from "./vite/tailwind";
+import { brandingPlugin } from "./vite/branding";
 import { extensionsPlugin } from "./vite/extensions";
 import { warmBundledDevPlugin } from "./vite/warmBundledDev";
 
@@ -201,6 +202,7 @@ export default defineConfig(() => {
     assetsInclude: ["**/*.wasm"],
     plugins: [
       extensionsPlugin(),
+      brandingPlugin(),
       devCompressionPlugin(),
       builtDev
         ? undefined

@@ -36,6 +36,13 @@ const handleMethod = (message: Record<string, unknown>) => {
 
   switch (method) {
     case "initialize": {
+      if (process.env.CODEX_APP_SERVER_TEST_STARTUP_FAILURE) {
+        process.stderr.write(
+          "private-token=do-not-publish: memory allocation of 64 bytes failed",
+          () => process.exit(1),
+        );
+        return;
+      }
       // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone mock peer process has no Effect runtime.
       const platform = NodeOS.platform();
       const stderrBytes = Number(process.env.CODEX_APP_SERVER_TEST_STDERR_BYTES ?? 0);

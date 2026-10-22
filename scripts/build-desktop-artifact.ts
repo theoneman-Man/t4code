@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off - Node's typed junction API avoids Windows symlink privileges while keeping the probe isolated.
 
+import {
+  hostBuildConfig,
+  hostProductName,
+  hostIconAssets,
+} from "../packages/extension-sdk/src/brandingBuild.ts";
+import { loadHostBranding } from "../packages/extension-sdk/src/brandingNode.ts";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeCrypto from "node:crypto";
 import * as NodeModule from "node:module";
@@ -62,7 +68,7 @@ import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
-const DESKTOP_APP_ID = "com.t3tools.t3code";
+const DESKTOP_APP_ID = loadHostBranding()?.appId ?? "com.t3tools.t3code";
 const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
@@ -2807,9 +2813,11 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
 }
 
 export function resolveDesktopProductName(version: string): string {
-  return resolveDesktopUpdateChannel(version) === "nightly"
-    ? "T3 Code (Nightly)"
-    : (desktopPackageJson.productName ?? "T3 Code");
+  return hostProductName(
+    resolveDesktopUpdateChannel(version) === "nightly"
+      ? "T3 Code (Nightly)"
+      : (desktopPackageJson.productName ?? "T3 Code"),
+  );
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -3031,7 +3039,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     buildConfig.win = winConfig;
   }
 
-  return buildConfig;
+  return hostBuildConfig(buildConfig);
 });
 
 const assertPlatformBuildResources = Effect.fn("assertPlatformBuildResources")(function* (
@@ -3682,7 +3690,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   });
 
   const appVersion = options.version ?? serverPackageJson.version;
-  const iconAssets = resolveDesktopBuildIconAssets(appVersion);
+  const iconAssets = hostIconAssets(resolveDesktopBuildIconAssets(appVersion));
   const commitHash = yield* resolveGitCommitHash(repoRoot);
   const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
   const stageRoot = yield* mkdir({
@@ -3834,9 +3842,9 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     options.platform,
     stageResourcesDir,
     {
-      macIconPng: path.join(repoRoot, iconAssets.macIconPng),
-      linuxIconPng: path.join(repoRoot, iconAssets.linuxIconPng),
-      windowsIconIco: path.join(repoRoot, iconAssets.windowsIconIco),
+      macIconPng: path.resolve(repoRoot, iconAssets.macIconPng),
+      linuxIconPng: path.resolve(repoRoot, iconAssets.linuxIconPng),
+      windowsIconIco: path.resolve(repoRoot, iconAssets.windowsIconIco),
     },
     options.verbose,
   );

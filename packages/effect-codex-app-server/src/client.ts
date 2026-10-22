@@ -1,3 +1,4 @@
+import * as Fiber from "effect/Fiber";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -270,6 +271,31 @@ export const layerChildProcess = (
 const makeChildProcessClient = Effect.fn(
   "effect-codex-app-server/CodexAppServerClient.makeChildProcessClient",
 )(function* (handle: ChildProcessSpawner.ChildProcessHandle, options: CodexAppServerClientOptions) {
-  yield* Stream.runDrain(handle.stderr).pipe(Effect.ignore, Effect.forkScoped);
-  return yield* make(makeChildStdio(handle), options, makeTerminationError(handle));
+  // Match only known resource failures; raw provider stderr can contain credentials.
+  const decoder = new TextDecoder();
+  let tail = "";
+  let diagnostic: "memory_exhaustion" | "thread_spawn_failed" | undefined;
+  const stderr = yield* Stream.runForEach(handle.stderr, (chunk) =>
+    Effect.sync(() => {
+      tail = (tail + decoder.decode(chunk, { stream: true })).slice(-16 * 1024);
+      if (
+        /memory allocation .* failed|out of memory|not enough (?:memory|storage)|paging file is too small/i.test(
+          tail,
+        )
+      )
+        diagnostic = "memory_exhaustion";
+      else if (
+        !diagnostic &&
+        /failed to spawn (?:a )?thread|cannot create (?:a )?thread|os error 1450/i.test(tail)
+      )
+        diagnostic = "thread_spawn_failed";
+    }),
+  ).pipe(Effect.ignore, Effect.forkScoped);
+  // Descendants can inherit stderr. Parent exit must not wait for their lifetime.
+  const termination = handle.exitCode.pipe(
+    Effect.ignore,
+    Effect.andThen(Fiber.join(stderr).pipe(Effect.timeoutOption("250 millis"))),
+    Effect.andThen(makeTerminationError(handle, () => diagnostic)),
+  );
+  return yield* make(makeChildStdio(handle), options, termination);
 });

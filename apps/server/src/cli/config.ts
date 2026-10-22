@@ -469,6 +469,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     devAllowedOrigins: env.devAllowedOrigins,
     noBrowser,
     startupPresentation,
+    ...(bootstrap?.extensionHost === undefined ? {} : { extensionHost: bootstrap.extensionHost }),
     desktopBootstrapToken,
     ...(desktopBootstrapSecret === undefined ? {} : { desktopBootstrapSecret }),
     ...(shellEnvironmentPrepared === undefined ? {} : { shellEnvironmentPrepared }),

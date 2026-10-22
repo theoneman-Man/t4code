@@ -58,3 +58,15 @@ packages into the extension. Extension-specific dependencies
 resolve from the extension's own `node_modules`. The sample's own tsconfig uses the same mappings
 with relative paths and is checked with
 `tsc-rs --noEmit -p packages/extension-sdk/fixtures/sample/tsconfig.json` from the host checkout.
+
+## Host branding
+
+Copy `t4.branding.example.json` to the gitignored root `t4.branding.json` and supply your own assets.
+Restart the build or dev process after changing it. Missing config preserves upstream identity and appearance.
+`appName` and `stageLabel` form the display name; `appId`, `scheme`, and `homeDirName` separate native identity,
+Electron profiles and default data. Explicit `T3CODE_HOME`, `--home-dir` and
+`T3CODE_DESKTOP_APP_USER_MODEL_ID` overrides keep precedence. Development uses `.dev` on the app id and
+`-dev` on the protocol. Assets and optional CSS resolve relative to the config; tokens and extra CSS run in
+`@layer host-branding`. Tokens take precedence over upstream theme defaults. Use a PNG favicon for native window/tray icons
+and macOS/Linux artifact icons; an ICO logo or favicon can supply the Windows artifact icon. Packaged apps
+carry the resolved identity and assets and do not need the local config file.

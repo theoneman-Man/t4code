@@ -51,6 +51,7 @@ type ChildProcessTerminationHandle = Pick<
 
 export const makeTerminationError = (
   handle: ChildProcessTerminationHandle,
+  diagnostic?: () => "memory_exhaustion" | "thread_spawn_failed" | undefined,
 ): Effect.Effect<CodexError.CodexAppServerError> =>
   Effect.match(handle.exitCode, {
     onFailure: (cause) =>
@@ -59,5 +60,12 @@ export const makeTerminationError = (
         pid: handle.pid,
         cause,
       }),
-    onSuccess: (code) => new CodexError.CodexAppServerProcessExitedError({ code, pid: handle.pid }),
+    onSuccess: (code) => {
+      const hint = diagnostic?.();
+      return new CodexError.CodexAppServerProcessExitedError({
+        code,
+        pid: handle.pid,
+        ...(hint ? { diagnostic: hint } : {}),
+      });
+    },
   });

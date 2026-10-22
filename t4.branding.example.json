@@ -1,0 +1,13 @@
+{
+  "appName": "T4",
+  "stageLabel": "Local",
+  "appId": "dev.example.t4",
+  "scheme": "t4",
+  "homeDirName": ".t4",
+  "logo": "./branding/logo.svg",
+  "favicon": "./branding/favicon.png",
+  "tokens": {
+    "--primary": "oklch(0.65 0.15 260)"
+  },
+  "css": "./branding/branding.css"
+}

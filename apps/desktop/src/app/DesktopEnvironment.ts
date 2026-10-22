@@ -1,3 +1,4 @@
+import { hostIdentity, resolveHostAppBranding } from "@t3tools/extension-sdk/branding";
 import type {
   DesktopAppBranding,
   DesktopAppStageLabel,
@@ -103,11 +104,11 @@ export function resolveDesktopAppBranding(input: {
   readonly appVersion: string;
 }): DesktopAppBranding {
   const stageLabel = resolveDesktopAppStageLabel(input);
-  return {
+  return resolveHostAppBranding({
     baseName: APP_BASE_NAME,
     stageLabel,
     displayName: `${APP_BASE_NAME} (${stageLabel})`,
-  };
+  });
 }
 
 function normalizeDesktopArch(arch: string): DesktopRuntimeArch {
@@ -228,10 +229,10 @@ const make = Effect.fn("desktop.environment.make")(function* (
     branding,
     displayName,
     appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () =>
-      isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
+      hostIdentity(isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code", isDevelopment),
     ),
     linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment),
-    linuxWmClass: isDevelopment ? "t3code-dev" : "t3code",
+    linuxWmClass: hostIdentity(isDevelopment ? "t3code-dev" : "t3code", isDevelopment),
     linuxApplicationsDir,
     appImagePath: config.appImagePath,
     defaultDesktopSettings: DesktopAppSettings.resolveDefaultDesktopSettings(input.appVersion),

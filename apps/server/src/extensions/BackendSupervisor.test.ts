@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as TestClock from "effect/testing/TestClock";
-import { READY_STABILITY_MS, supervise } from "./BackendSupervisor.ts";
+import { READY_STABILITY_MS, supervise } from "@t3tools/extension-sdk/host";
 
 const harness = Effect.fn("SupervisorTest.harness")(function* (ready = true) {
   const launches = yield* Queue.unbounded<Deferred.Deferred<void>>();

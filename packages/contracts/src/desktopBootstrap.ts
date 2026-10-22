@@ -8,6 +8,28 @@ export const SERVER_EXIT_CODE_STATE_DIR_OWNED = 78;
 export const DesktopBackendBootstrap = Schema.Struct({
   mode: Schema.Literal("desktop"),
   noBrowser: Schema.Boolean,
+  extensionHost: Schema.optionalKey(
+    Schema.Struct({
+      listFile: Schema.optionalKey(Schema.String),
+      backends: Schema.Array(
+        Schema.Struct({
+          extensionId: Schema.String,
+          url: Schema.String,
+          token: Schema.String,
+          instanceId: Schema.String,
+          dataDir: Schema.String,
+        }),
+      ),
+      failures: Schema.optionalKey(
+        Schema.Array(
+          Schema.Struct({
+            extensionId: Schema.String,
+            message: Schema.String,
+          }),
+        ),
+      ),
+    }),
+  ),
   port: PortSchema,
   // Omitted when the desktop launches the backend inside WSL, since the
   // Windows-side baseDir maps to /mnt/c/... and the Linux side should use its

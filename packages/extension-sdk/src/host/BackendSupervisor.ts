@@ -1,4 +1,4 @@
-import { EXTENSION_MAX_RESTARTS } from "@t3tools/extension-sdk/protocol";
+import { EXTENSION_MAX_RESTARTS } from "../protocol.ts";
 import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 

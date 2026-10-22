@@ -1,3 +1,5 @@
+import * as ExtensionShutdown from "../extensions/shutdown.ts";
+import type * as Scope from "effect/Scope";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -7,6 +9,9 @@ import * as Ref from "effect/Ref";
 export class DesktopShutdown extends Context.Service<
   DesktopShutdown,
   {
+    readonly registerExtensionStop?: (
+      stop: Effect.Effect<void>,
+    ) => Effect.Effect<void, never, Scope.Scope>;
     readonly request: Effect.Effect<void>;
     readonly awaitRequest: Effect.Effect<void>;
     readonly markComplete: Effect.Effect<void>;
@@ -16,14 +21,17 @@ export class DesktopShutdown extends Context.Service<
 >()("@t3tools/desktop/app/DesktopShutdown") {}
 
 const make = Effect.gen(function* () {
+  const extensions = yield* ExtensionShutdown.make;
   const requested = yield* Deferred.make<void>();
   const completed = yield* Deferred.make<void>();
   const completedRef = yield* Ref.make(false);
 
   return DesktopShutdown.of({
+    registerExtensionStop: extensions.register,
     request: Deferred.succeed(requested, undefined).pipe(Effect.asVoid),
     awaitRequest: Deferred.await(requested),
-    markComplete: Ref.set(completedRef, true).pipe(
+    markComplete: extensions.stop.pipe(
+      Effect.andThen(Ref.set(completedRef, true)),
       Effect.andThen(Deferred.succeed(completed, undefined)),
       Effect.asVoid,
     ),

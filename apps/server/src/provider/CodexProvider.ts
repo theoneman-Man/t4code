@@ -1,3 +1,4 @@
+import { resolveCodexExecutable } from "./Drivers/CodexExecutable.ts";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -485,7 +486,7 @@ export const withCodexAppServerClient = Effect.fn("withCodexAppServerClient")(fu
     ...(resolvedHomePath ? { CODEX_HOME: resolvedHomePath } : {}),
   };
   const spawnCommand = yield* resolveSpawnCommand(
-    input.binaryPath,
+    yield* resolveCodexExecutable(input.binaryPath, environment),
     codexAppServerArgs(input.launchArgs),
     { env: environment, extendEnv: true },
   );

@@ -1,3 +1,4 @@
+import { hostBranding, hostIdentity } from "@t3tools/extension-sdk/branding";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -39,6 +40,9 @@ export const resolveUserDataPath = Effect.fn("desktop.userData.resolveUserDataPa
   }) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    if (hostBranding?.appId) {
+      return path.join(input.appDataDirectory, hostIdentity("", input.isDevelopment));
+    }
     const names = input.isDevelopment
       ? { current: "t3code-dev", legacy: "T3 Code (Dev)" }
       : { current: "t3code-v2", legacy: "T3 Code (Alpha)" };

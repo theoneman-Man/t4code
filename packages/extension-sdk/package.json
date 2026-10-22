@@ -18,11 +18,26 @@
     "./protocol": {
       "types": "./src/protocol.ts",
       "import": "./src/protocol.ts"
+    },
+    "./host": {
+      "types": "./src/host/index.ts",
+      "import": "./src/host/index.ts"
+    },
+    "./branding": {
+      "types": "./src/branding.ts",
+      "import": "./src/branding.ts"
+    },
+    "./branding/node": {
+      "types": "./src/brandingNode.ts",
+      "import": "./src/brandingNode.ts"
     }
   },
   "scripts": {
     "typecheck": "tsc-rs --noEmit",
     "test": "vp test run --config ../../vite.config.ts --dir ."
+  },
+  "dependencies": {
+    "effect": "catalog:"
   },
   "devDependencies": {
     "@base-ui/react": "^1.4.1",

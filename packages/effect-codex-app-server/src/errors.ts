@@ -148,13 +148,22 @@ export class CodexAppServerProcessExitedError extends Schema.TaggedError<CodexAp
   {
     code: Schema.optional(Schema.Number),
     pid: Schema.optionalKey(Schema.Int),
+    diagnostic: Schema.optionalKey(Schema.Literals(["memory_exhaustion", "thread_spawn_failed"])),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message() {
-    return this.code === undefined
-      ? "Codex App Server process exited"
-      : `Codex App Server process exited with code ${this.code}`;
+    const hint =
+      this.diagnostic === "memory_exhaustion"
+        ? ". The process ran out of memory or paging space"
+        : this.diagnostic === "thread_spawn_failed"
+          ? ". The process could not create a thread"
+          : "";
+    return (
+      (this.code === undefined
+        ? "Codex App Server process exited"
+        : `Codex App Server process exited with code ${this.code}`) + hint
+    );
   }
 }
 
