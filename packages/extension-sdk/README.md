@@ -36,6 +36,22 @@ failed and stopped states display a status message with a refresh action. Render
 contained at each slot boundary. The host also refreshes backend status when an event stream
 reconnects or a proxied request returns 503.
 
+## Backend launch protocol v1
+
+The host launches `backend.command` with `T4_EXT_ID`, `T4_EXT_PORT`, `T4_EXT_TOKEN`,
+`T4_EXT_DATA_DIR` and `T4_EXT_INSTANCE`. The backend binds to loopback and answers
+`GET /.t4/ready` with `{ protocol: 1, extensionId, instanceId, dataDir }` within 60 seconds.
+Every request requires the private per-launch bearer.
+
+On stop, including update suspension and host quit, the host first sends `POST /.t4/shutdown`
+with that bearer. This optional step does not change protocol v1. A backend can acknowledge
+with a successful status such as `202`, stop workers, flush state, release ownership and exit.
+The host allows up to 5 seconds total for the request and process exit, then uses its existing
+process-tree termination. Unsupported routes, unsuccessful statuses and connection errors fall
+back immediately. Redirects are rejected so the bearer stays at the launched endpoint.
+Backends without this route continue to work. Windows process-tree termination cannot deliver
+SIGTERM, so backends that need clean finalization should implement the HTTP step.
+
 ## Typechecking an external folder
 
 Given a host checkout at `C:/dev/host` and an extension at any other location, use this exact

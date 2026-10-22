@@ -2825,6 +2825,22 @@ export function resolveDesktopProductName(version: string): string {
   );
 }
 
+export const stageWindowsProtocolInstaller = Effect.fn("stageWindowsProtocolInstaller")(function* (
+  stageResourcesDir: string,
+) {
+  const scheme = loadHostBranding()?.scheme;
+  if (!scheme) return;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const installerPath = path.join(stageResourcesDir, "installer.nsh");
+  const installer = yield* fs.readFileString(installerPath);
+  // NSIS does not consume electron-builder's Windows protocols configuration.
+  yield* fs.writeFileString(
+    installerPath,
+    `!define DESKTOP_PROTOCOL_SCHEME "${scheme}"\n${installer}`,
+  );
+});
+
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   platform: typeof BuildPlatform.Type,
   target: string,
@@ -3045,7 +3061,14 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     buildConfig.win = winConfig;
   }
 
-  return applyPackagedExtensionsConfig(hostBuildConfig(buildConfig), packagedExtensions);
+  const brandedConfig = hostBuildConfig(buildConfig);
+  if (platform === "win") {
+    const winConfig = brandedConfig.win as Record<string, unknown>;
+    winConfig.protocols = [
+      { name: brandedConfig.productName, schemes: [loadHostBranding()?.scheme ?? "t3code"] },
+    ];
+  }
+  return applyPackagedExtensionsConfig(brandedConfig, packagedExtensions);
 });
 
 const assertPlatformBuildResources = Effect.fn("assertPlatformBuildResources")(function* (
@@ -3807,6 +3830,9 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   yield* Effect.log("[desktop-artifact] Staging release app...");
   yield* fs.copy(distDirs.desktopDist, path.join(stageAppDir, "apps/desktop/dist-electron"));
   yield* fs.copy(distDirs.desktopResources, stageResourcesDir);
+  if (options.platform === "win") {
+    yield* stageWindowsProtocolInstaller(stageResourcesDir);
+  }
   if (options.platform === "linux") {
     const extensionDir = path.join(stageAppDir, "apps/desktop/gnome-extension");
     yield* fs.makeDirectory(extensionDir, { recursive: true });

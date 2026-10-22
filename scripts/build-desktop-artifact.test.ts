@@ -29,6 +29,7 @@ import {
   parseWslRuntimeArchiveMembers,
   readWorkspaceConfig,
   createBuildConfig,
+  stageWindowsProtocolInstaller,
   DESKTOP_FILE_EXCLUSIONS,
   InvalidMacPasskeyRpDomainError,
   InvalidMacPasskeyPublishableKeyError,
@@ -69,9 +70,10 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import { stagePackagedExtensions } from "./lib/packaged-extensions.ts";
+import * as BrandingNode from "@t3tools/extension-sdk/branding/node";
 
 // A developer's ignored branding config must not change the upstream fixture identity.
-vi.mock("../packages/extension-sdk/src/brandingNode.ts", () => ({ loadHostBranding: () => null }));
+vi.mock("@t3tools/extension-sdk/branding/node", () => ({ loadHostBranding: () => null }));
 
 const encodeModuleUrl = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
 const decodePackageVersion = Schema.decodeUnknownEffect(
@@ -312,6 +314,74 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         ),
       );
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
+  it.effect.each([null, { appName: "Fixture", scheme: "fixture-app" }])(
+    "configures the Windows production protocol with branding %j",
+    (branding) =>
+      Effect.gen(function* () {
+        using _branding = vi.spyOn(BrandingNode, "loadHostBranding").mockReturnValue(branding);
+        const config = yield* createBuildConfig(
+          "win",
+          "nsis",
+          "1.2.3",
+          false,
+          false,
+          undefined,
+          undefined,
+        );
+        const protocols = (config.win as { protocols: Array<{ schemes: string[] }> }).protocols;
+        assert.deepEqual(
+          protocols.map(({ schemes }) => schemes),
+          [[branding?.scheme ?? "t3code"]],
+        );
+      }),
+  );
+
+  it.effect("guards NSIS protocol removal by this install's exact executable command", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const installer = yield* fs.readFileString(
+        path.join(import.meta.dirname, "../apps/desktop/resources/installer.nsh"),
+      );
+      assert.include(installer, '!define DESKTOP_PROTOCOL_SCHEME "t3code"');
+      assert.match(installer, /!macro customUnInstall\s+[\s\S]*?!macroend/u);
+      assert.include(
+        installer,
+        'ReadRegStr $0 HKCU "Software\\Classes\\${DESKTOP_PROTOCOL_SCHEME}\\shell\\open\\command" ""',
+      );
+      assert.include(
+        installer,
+        '${If} $0 == \'$\\"$INSTDIR\\${APP_EXECUTABLE_FILENAME}$\\" $\\"%1$\\"\'',
+      );
+      assert.match(
+        installer,
+        /\$\{If\}[^\n]+\s+DeleteRegKey HKCU "Software\\Classes\\\$\{DESKTOP_PROTOCOL_SCHEME\}"\s+\$\{EndIf\}/u,
+      );
+    }),
+  );
+
+  it.effect.each([null, { scheme: "fixture-app" }])(
+    "stages the NSIS production scheme with branding %j",
+    (branding) =>
+      Effect.gen(function* () {
+        using _branding = vi.spyOn(BrandingNode, "loadHostBranding").mockReturnValue(branding);
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const resources = yield* fs.makeTempDirectoryScoped({ prefix: "protocol-installer-" });
+        const source = yield* fs.readFileString(
+          path.join(import.meta.dirname, "../apps/desktop/resources/installer.nsh"),
+        );
+        const stagedPath = path.join(resources, "installer.nsh");
+        yield* fs.writeFileString(stagedPath, source);
+        yield* stageWindowsProtocolInstaller(resources);
+        const staged = yield* fs.readFileString(stagedPath);
+        assert.equal(
+          staged,
+          branding ? `!define DESKTOP_PROTOCOL_SCHEME "${branding.scheme}"\n${source}` : source,
+        );
+      }),
   );
 
   it.effect("rejects overlapping builds from another process until restoration finishes", () =>

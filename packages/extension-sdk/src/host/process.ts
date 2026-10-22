@@ -160,6 +160,24 @@ export const stopChild = Effect.fn("ExtensionHost.stopChild")(function* (
   yield* Effect.promise(() => exited);
 });
 
+const gracefulStop = Effect.fn("ExtensionHost.gracefulStop")(
+  function* (descriptor: ReadyBackendDescriptor, exited: Promise<void>) {
+    const client = yield* HttpClient.HttpClient;
+    yield* Effect.scoped(
+      HttpClient.withScope(client)
+        .post(`${descriptor.url}/.t4/shutdown`, {
+          headers: { authorization: `Bearer ${descriptor.token}`, connection: "close" },
+        })
+        .pipe(
+          Effect.flatMap(HttpClientResponse.filterStatusOk),
+          Effect.andThen(Effect.promise(() => exited)),
+          Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
+        ),
+    );
+  },
+  (effect) => effect.pipe(Effect.interruptible, Effect.timeout(5_000), Effect.ignore),
+);
+
 export interface ProcessOptions {
   readonly platform: NodeJS.Platform;
   readonly stateDir: string;
@@ -234,7 +252,14 @@ export const launch = Effect.fn("ExtensionHost.launch")(function* (
       },
       catch: (cause) => new ExtensionHostError({ stage: "launch", cause }),
     }),
-    ({ child, exited }) => stopChild(child, exited, options.platform),
+    ({ child, exited }) =>
+      Effect.gen(function* () {
+        if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+          // Windows tree termination cannot deliver SIGTERM. Protocol 1 backends may finalize over HTTP.
+          yield* gracefulStop(descriptor, exited);
+        }
+        yield* stopChild(child, exited, options.platform);
+      }),
   );
   yield* options.onStarting?.(descriptor) ?? Effect.void;
   yield* Effect.raceFirst(
