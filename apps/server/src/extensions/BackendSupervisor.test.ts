@@ -1,3 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Tests model captured child handles without spawning a process.
+import * as NodeChildProcess from "node:child_process";
+import { vi } from "vite-plus/test";
+import { stopChild } from "@t3tools/extension-sdk/host";
 import { expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -5,6 +9,8 @@ import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as TestClock from "effect/testing/TestClock";
 import { READY_STABILITY_MS, supervise } from "@t3tools/extension-sdk/host";
+
+vi.mock("node:child_process", { spy: true });
 
 const harness = Effect.fn("SupervisorTest.harness")(function* (ready = true) {
   const launches = yield* Queue.unbounded<Deferred.Deferred<void>>();
@@ -94,4 +100,41 @@ it.effect("recovers the restart budget and initial backoff after a stable ready 
     yield* Fiber.join(test.fiber);
     expect(test.count()).toBe(11);
   }),
+);
+
+it.live(
+  "Windows shutdown targets the captured PID tree and waits for the owned child to close",
+  () =>
+    Effect.gen(function* () {
+      const child = Object.assign(new NodeChildProcess.ChildProcess(), { pid: 12345 });
+      const killer = new NodeChildProcess.ChildProcess();
+      const started = Promise.withResolvers<void>();
+      const exited = Promise.withResolvers<void>();
+      using kill = vi.spyOn(child, "kill").mockReturnValue(true);
+      const spawn = vi.mocked(NodeChildProcess.spawn).mockImplementationOnce(() => {
+        started.resolve();
+        return killer;
+      });
+      let stopped = false;
+      const stopping = yield* stopChild(child, exited.promise, "win32").pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            stopped = true;
+          }),
+        ),
+        Effect.forkScoped,
+      );
+      yield* Effect.promise(() => started.promise);
+      expect(spawn).toHaveBeenCalledWith("taskkill", ["/PID", "12345", "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      expect(kill).not.toHaveBeenCalled();
+      killer.emit("exit", 0);
+      expect(kill).toHaveBeenCalledOnce();
+      expect(stopped).toBe(false);
+      exited.resolve();
+      yield* Fiber.join(stopping);
+      expect(stopped).toBe(true);
+    }),
 );

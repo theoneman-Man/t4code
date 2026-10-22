@@ -120,7 +120,7 @@ export const probe = Effect.fn("ExtensionHost.probe")(function* (
   return { ...descriptor, instanceId: ready.instanceId };
 }, Effect.timeout(EXTENSION_READY_TIMEOUT_MS));
 
-const stopChild = Effect.fn("ExtensionHost.stopChild")(function* (
+export const stopChild = Effect.fn("ExtensionHost.stopChild")(function* (
   child: NodeChildProcess.ChildProcess,
   exited: Promise<void>,
   platform: NodeJS.Platform,

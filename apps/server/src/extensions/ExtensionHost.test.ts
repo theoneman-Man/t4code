@@ -15,6 +15,7 @@ import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -384,7 +385,7 @@ it.live("rejects a mismatched borrowed readiness identity without launching a ch
 );
 
 it.live(
-  "dist bootstrap list and descriptors serve a ready proxy without spawning or stopping the owner",
+  "dist bootstrap serves a ready proxy across successful and failed server scopes without stopping the owner",
   () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -395,8 +396,8 @@ it.live(
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const pid = Number(yield* fs.readFileString(path.join(dataDir, "backend.pid")));
-        for (const _restart of [0, 1]) {
-          yield* Effect.scoped(
+        for (const _restart of [0, 1, 2]) {
+          const exit = yield* Effect.scoped(
             Effect.gen(function* () {
               const handoff =
                 _restart === 0 ? descriptor : { ...descriptor, instanceId: "previous-launch" };
@@ -421,8 +422,10 @@ it.live(
               expect(yield* fs.exists(path.join(config.logsDir, "extensions", "sample.log"))).toBe(
                 false,
               );
+              if (_restart === 1) return yield* Effect.fail("server scope failed");
             }),
-          );
+          ).pipe(Effect.exit);
+          expect(Exit.isFailure(exit)).toBe(_restart === 1);
           expect(() => process.kill(pid, 0)).not.toThrow();
           expect(Number(yield* fs.readFileString(path.join(dataDir, "backend.pid")))).toBe(pid);
         }

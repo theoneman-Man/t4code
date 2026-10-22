@@ -10,9 +10,14 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import { FetchHttpClient } from "effect/http";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
+import type * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import * as DesktopShutdown from "../app/DesktopShutdown.ts";
+import * as ExtensionUpdates from "./updates.ts";
 
 export interface OwnerOptions extends Omit<ProcessOptions, "executable"> {
   readonly hostRoot: string;
@@ -28,8 +33,15 @@ export class Options extends Context.Reference<{ readonly listFile?: string }>(
 
 export const make = Effect.fn("DesktopExtensionOwner.make")(function* (options: OwnerOptions) {
   const resolveExecutable = yield* SpawnExecutableResolution;
-  const ownerScope = yield* Scope.make();
-  const stop = Scope.close(ownerScope, Exit.void);
+  const mutex = yield* Semaphore.make(1);
+  let ownerScope = yield* Scope.make();
+  let closed = false;
+  const stop = mutex.withPermits(1)(
+    Effect.gen(function* () {
+      closed = true;
+      yield* Scope.close(ownerScope, Exit.void);
+    }),
+  );
   yield* Effect.addFinalizer(() => stop);
   const listFile = NodePath.resolve(options.hostRoot, options.listFile ?? EXTENSION_LIST_FILE);
   const hasList = options.enabled && NodeFS.existsSync(listFile);
@@ -52,9 +64,11 @@ export const make = Effect.fn("DesktopExtensionOwner.make")(function* (options: 
       message: undefined as string | undefined,
       listeners: new Set<(state: ExtensionBackendState) => void>(),
     }));
-  const initialized = yield* Deferred.make<void>();
+  let initialized = yield* Deferred.make<void>();
   let started = false;
+  let suspended = false;
   const start = Effect.gen(function* () {
+    if (closed) return;
     // Config resolution can race with another server start. Claim ownership before yielding.
     if (started) return yield* Deferred.await(initialized);
     started = true;
@@ -129,7 +143,34 @@ export const make = Effect.fn("DesktopExtensionOwner.make")(function* (options: 
       ),
       Effect.ensuring(Deferred.succeed(initialized, undefined)),
     );
-  });
+  }).pipe(mutex.withPermits(1));
+  const suspend = mutex.withPermits(1)(
+    Effect.gen(function* () {
+      if (closed || suspended || !started) return;
+      suspended = true;
+      yield* Scope.close(ownerScope, Exit.void);
+      ownerScope = yield* Scope.make();
+      initialized = yield* Deferred.make<void>();
+      started = false;
+      for (const entry of entries) {
+        entry.descriptor = undefined;
+        entry.message = undefined;
+        entry.state = "stopped";
+        for (const listener of entry.listeners) listener(entry.state);
+      }
+    }),
+  );
+  const resume = Effect.suspend(() =>
+    suspended && !closed
+      ? start.pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              suspended = false;
+            }),
+          ),
+        )
+      : Effect.void,
+  );
   const bootstrap = Effect.gen(function* () {
     yield* start;
     // Presence means desktop ownership, even if all launches failed. No server may fall back.
@@ -171,9 +212,32 @@ export const make = Effect.fn("DesktopExtensionOwner.make")(function* (options: 
         });
       }),
   );
-  return { bootstrap, stop, awaitState };
+  return { bootstrap, stop, awaitState, suspend, resume };
 });
 
 // WSL cannot execute Windows manifests or reach Windows loopback backends in every network mode.
 // An explicit empty handoff disables headless ownership in that server too.
 export const wslBootstrap = { extensionHost: { backends: [] } } as const;
+
+export const makeForDesktop = Effect.fn("DesktopExtensionOwner.makeForDesktop")(function* (
+  environment: DesktopEnvironment.DesktopEnvironment["Service"],
+) {
+  const options = yield* Options;
+  const owner = yield* make({
+    hostRoot: environment.rootDir,
+    platform: environment.platform,
+    ...options,
+    // Packaged list/root selection is supplied by the packaging integration.
+    enabled: environment.isDevelopment,
+    stateDir: environment.stateDir,
+    logsDir: environment.logDir,
+    // The shell environment is prepared before the first bootstrap starts extensions.
+    environment: process.env,
+  });
+  const shutdown = yield* Effect.serviceOption(DesktopShutdown.DesktopShutdown);
+  if (Option.isSome(shutdown)) {
+    yield* shutdown.value.registerExtensionStop?.(owner.stop) ?? Effect.void;
+    yield* ExtensionUpdates.register(shutdown.value, owner);
+  }
+  return owner;
+});

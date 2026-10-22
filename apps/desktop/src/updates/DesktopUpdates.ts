@@ -25,6 +25,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
+import * as ExtensionUpdates from "../extensions/updates.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
@@ -342,6 +343,7 @@ export const make = Effect.gen(function* () {
   const desktopState = yield* DesktopState.DesktopState;
   const electronUpdater = yield* ElectronUpdater.ElectronUpdater;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
+  const extensionUpdates = yield* ExtensionUpdates.make;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
@@ -667,6 +669,7 @@ export const make = Effect.gen(function* () {
     yield* removeUpdateRestartMarker;
     yield* removeInstallRecord;
     yield* Effect.gen(function* () {
+      yield* extensionUpdates.recover;
       const runningInstances = yield* Ref.getAndSet(installRunningBackendsRef, []);
       const instances = (yield* pool.list).filter((instance) =>
         runningInstances.includes(instance),
@@ -758,6 +761,7 @@ export const make = Effect.gen(function* () {
             (instance) => instance.stop({ timeout: Duration.seconds(5) }),
             { concurrency: "unbounded" },
           );
+          yield* extensionUpdates.stop;
           yield* electronUpdater.quitAndInstall({
             isSilent: true,
             isForceRunAfter: true,

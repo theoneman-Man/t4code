@@ -1,5 +1,4 @@
 import * as DesktopExtensionOwner from "../extensions/DesktopExtensionOwner.ts";
-import * as DesktopShutdown from "../app/DesktopShutdown.ts";
 import * as NodeOS from "node:os";
 
 import { parsePersistedServerObservabilitySettings } from "@t3tools/shared/serverSettings";
@@ -760,21 +759,7 @@ export const make = Effect.gen(function* () {
   const wslServerTree = yield* DesktopWslServerTree.DesktopWslServerTree;
   const settings = yield* DesktopAppSettings.DesktopAppSettings;
   const crypto = yield* Crypto.Crypto;
-  const extensionOptions = yield* DesktopExtensionOwner.Options;
-  const extensionOwner = yield* DesktopExtensionOwner.make({
-    hostRoot: environment.rootDir,
-    platform: environment.platform,
-    ...extensionOptions,
-    // Packaged list/root selection is supplied by the later packaging integration.
-    enabled: environment.isDevelopment,
-    stateDir: environment.stateDir,
-    logsDir: environment.logDir,
-    // This object receives the prepared shell PATH before the first bootstrap starts extensions.
-    environment: process.env,
-  });
-  const shutdown = yield* Effect.serviceOption(DesktopShutdown.DesktopShutdown);
-  if (Option.isSome(shutdown))
-    yield* shutdown.value.registerExtensionStop?.(extensionOwner.stop) ?? Effect.void;
+  const extensionOwner = yield* DesktopExtensionOwner.makeForDesktop(environment);
   // SynchronizedRef (not a plain Ref) so the read-generate-write is atomic.
   // crypto.randomBytes is a yield point, and resolvePrimary + resolveWsl can
   // resolve concurrently; with a plain Ref both could observe None, generate

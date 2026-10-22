@@ -35,3 +35,10 @@ export function removeUnknownExtensionPanels(byThreadKey: Record<string, ThreadR
   }
   return result;
 }
+
+export function mergeExtensionPanels<
+  State extends { byThreadKey: Record<string, ThreadRightPanelState> },
+>(persisted: unknown, current: State): State {
+  const merged = { ...current, ...(persisted as Partial<State>) };
+  return { ...merged, byThreadKey: removeUnknownExtensionPanels(merged.byThreadKey) };
+}

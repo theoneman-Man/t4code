@@ -14,7 +14,7 @@ import type { ChatFileAttachment } from "./types";
 import {
   extensionPanelSurface,
   restoreExtensionPanel,
-  removeUnknownExtensionPanels,
+  mergeExtensionPanels,
   type ExtensionPanelSurface,
 } from "./extensions/panelSurface";
 
@@ -1151,10 +1151,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
         ),
       }),
       migrate: migratePersistedRightPanelState,
-      merge: (persisted, current) => {
-        const merged = { ...current, ...(persisted as Partial<RightPanelStoreState>) };
-        return { ...merged, byThreadKey: removeUnknownExtensionPanels(merged.byThreadKey) };
-      },
+      merge: mergeExtensionPanels,
     },
   ),
 );

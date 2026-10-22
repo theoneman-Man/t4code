@@ -155,6 +155,48 @@ it.effect("a missing list keeps bootstrap unchanged", () =>
   ).pipe(Effect.provide(NodeServices.layer)),
 );
 
+it.live(
+  "update suspension stops the captured child once and recovery creates a working owner",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { fs, directory, dataDir, listFile } = yield* fixture;
+        yield* fs.writeFileString(listFile, JSON.stringify([{ path: fixtureRoot, dataDir }]));
+        const owner = yield* DesktopExtensionOwner.make({
+          hostRoot: directory,
+          platform: yield* HostProcess.Platform,
+          enabled: true,
+          stateDir: directory,
+          logsDir: directory,
+        });
+        yield* owner.bootstrap;
+        const firstPid = Number(yield* fs.readFileString(NodePath.join(dataDir, "backend.pid")));
+        yield* owner.suspend;
+        yield* owner.suspend;
+        expect(() => process.kill(firstPid, 0)).toThrow();
+        yield* owner.resume;
+        yield* owner.resume;
+        const descriptor = (yield* owner.bootstrap).extensionHost?.backends[0];
+        if (!descriptor) return yield* Effect.die("Missing recovered fixture descriptor");
+        const secondPid = Number(yield* fs.readFileString(NodePath.join(dataDir, "backend.pid")));
+        expect(secondPid).not.toBe(firstPid);
+        const client = yield* HttpClient.HttpClient;
+        expect(
+          yield* (yield* client.get(descriptor.url + "/hello", {
+            headers: { authorization: "Bearer " + descriptor.token },
+          })).json,
+        ).toEqual({ message: "hello from sample" });
+        yield* owner.suspend;
+        yield* owner.stop;
+        yield* owner.resume;
+        expect(() => process.kill(secondPid, 0)).toThrow();
+        expect(Number(yield* fs.readFileString(NodePath.join(dataDir, "backend.pid")))).toBe(
+          secondPid,
+        );
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+);
+
 it.live("child restarts preserve proxy URL and bearer and rotate launch identity", () =>
   Effect.scoped(
     Effect.gen(function* () {

@@ -3,6 +3,7 @@ export {
   backendEnvironment,
   launch,
   probe,
+  stopChild,
   type ProcessOptions,
   type ReadyBackendDescriptor,
 } from "./process.ts";
