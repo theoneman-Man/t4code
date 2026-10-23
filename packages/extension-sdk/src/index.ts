@@ -3,6 +3,13 @@
 // Vite replaces this declaration entry with the host runtime. Node consumers use the pure subpaths.
 export * from "./manifest.ts";
 export * from "./protocol.ts";
+export * from "./threads.ts";
+export declare function useExtThreads(): ReturnType<
+  typeof import("./threads.ts").createThreadClient
+> & {
+  subscribeThread(threadId: string, onEvent: (event: ExtensionEvent) => void): () => void;
+  openThread(threadId: string): Promise<void>;
+};
 export type * from "./types.ts";
 import type { ExtContext } from "./types.ts";
 import type { ExtensionEvent } from "./protocol.ts";

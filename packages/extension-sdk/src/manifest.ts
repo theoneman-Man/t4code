@@ -26,6 +26,7 @@ export interface ExtensionBackendManifest {
 }
 
 export interface ExtensionManifest {
+  readonly permissions?: readonly "threads"[];
   readonly id: string;
   readonly sdk: typeof EXTENSION_SDK_VERSION;
   /** Web entry relative to the extension folder; its default export is an `ExtensionModule`. */
@@ -128,6 +129,13 @@ export function parseExtensionManifest(
     throw new ExtensionManifestError(`${source}: web must be a relative module path`);
   }
   const routesValue = value.routes === undefined ? [] : value.routes;
+  if (
+    value.permissions !== undefined &&
+    (!Array.isArray(value.permissions) ||
+      value.permissions.some((permission) => permission !== "threads"))
+  ) {
+    throw new ExtensionManifestError(`${source}: permissions may contain only "threads"`);
+  }
   if (!Array.isArray(routesValue))
     throw new ExtensionManifestError(`${source}: routes must be an array`);
   const routes = routesValue.map((route, index) => parseRoute(route, source, index));
@@ -139,6 +147,9 @@ export function parseExtensionManifest(
     id,
     sdk: EXTENSION_SDK_VERSION,
     routes,
+    ...(value.permissions === undefined
+      ? {}
+      : { permissions: value.permissions.length === 0 ? [] : (["threads"] as const) }),
     ...(value.web === undefined ? {} : { web: value.web as string }),
     ...(backend === undefined ? {} : { backend }),
   };

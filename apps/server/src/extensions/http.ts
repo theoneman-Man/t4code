@@ -71,5 +71,3 @@ export const layer = HttpRouter.use((router) =>
     );
   }),
 ).pipe(Layer.provide(ExtensionProxy.layer));
-
-export const layerWithHost = layer.pipe(Layer.provide(ExtensionHost.layer));

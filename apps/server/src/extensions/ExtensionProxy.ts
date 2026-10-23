@@ -72,6 +72,7 @@ const make = Effect.gen(function* () {
       `${backend.url}${target.path}${target.search}`,
     ).pipe(
       HttpClientRequest.setHeaders(requestHeaders(request.headers, backend.token, target.scope)),
+      HttpClientRequest.setHeader("x-t4-thread-host", host.threadHostUrl),
       request.method === "GET" || request.method === "HEAD"
         ? (self) => self
         : HttpClientRequest.bodyStream(request.stream, {

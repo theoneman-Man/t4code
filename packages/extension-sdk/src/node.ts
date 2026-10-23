@@ -2,6 +2,7 @@
 // Node-only helpers for build tooling, the server and the desktop app.
 import * as FS from "node:fs";
 import * as Path from "node:path";
+export { createBackendThreadClient } from "./threads.ts";
 
 import {
   EXTENSION_LIST_FILE,

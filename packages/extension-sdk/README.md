@@ -75,6 +75,35 @@ resolve from the extension's own `node_modules`. The sample's own tsconfig uses 
 with relative paths and is checked with
 `tsc-rs --noEmit -p packages/extension-sdk/fixtures/sample/tsconfig.json` from the host checkout.
 
+## Extension threads
+
+Add `"permissions": ["threads"]` to the manifest to enable the reserved host routes under
+`/ext/<id>/.t4/threads`. Browser requests require the environment's read or operate scope.
+Backends use their current `T4_EXT_TOKEN` bearer, which grants access only to their extension's
+owned threads. This bearer does not grant arbitrary RPC or access to other threads.
+
+`useExtThreads()` returns `launchThread({ projectId?, title, prompt, instructions?, idempotencyKey })`,
+`sendToThread(threadId, text)`, `readThread(threadId, { after? })`,
+`subscribeThread(threadId, onEvent)` and `openThread(threadId)`.
+Launch returns a thread ID. Reusing a key with the same input returns the same thread;
+changing its input returns 409. Receipts survive host restarts. Omitting `projectId` uses the
+host's scratch project. The project's effective default model must be configured. Launches
+require approvals. Optional instructions precede the prompt in the initial message.
+
+Read returns at most 100 conversation items, the orchestration status or `archived`,
+and an opaque `after` cursor for the next page. A subscription uses the existing SDK event
+stream machinery with reconnect and cursor replay. It returns an unsubscribe function.
+Events have topic `thread:<threadId>` and data `{ threadId, type }`; they invalidate the read
+result. Reread without `after` to refresh streaming messages. Provider/tool payloads stay in
+orchestration. `openThread` verifies ownership and navigates within the bound environment.
+
+Backends import `createBackendThreadClient` from `@t3tools/extension-sdk/node` or
+`@t3tools/extension-sdk/threads`. Create it with `{ hostUrl, extensionId, token }`, taking
+`hostUrl` from the host-supplied `x-t4-thread-host` proxy request header and `token` from
+`T4_EXT_TOKEN`. It exposes launch, send and read. Persist the thread ID in your own state;
+when an event needs attention, call `sendToThread(threadId, text)`. Refresh the host URL on
+subsequent proxied requests because the host may restart on a different port.
+
 ## Host branding
 
 Copy `t4.branding.example.json` to the gitignored root `t4.branding.json` and supply your own assets.

@@ -11,6 +11,10 @@
       "types": "./src/manifest.ts",
       "import": "./src/manifest.ts"
     },
+    "./threads": {
+      "types": "./src/threads.ts",
+      "import": "./src/threads.ts"
+    },
     "./node": {
       "types": "./src/node.ts",
       "import": "./src/node.ts"

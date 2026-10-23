@@ -35,7 +35,7 @@ async function selectWorkspace(name: string) {
   await trigger.click();
   const popup = page.getByRole("menu");
   await expect.element(popup).toBeVisible();
-  const item = page.getByRole("menuitem", { name, exact: true });
+  const item = page.getByRole("menuitemradio", { name, exact: true });
   await expect.element(item).toBeVisible();
   await item.click();
   await expect.element(popup).not.toBeInTheDocument();

@@ -1,6 +1,7 @@
 {
   "id": "sample",
   "sdk": 1,
+  "permissions": ["threads"],
   "web": "./web/index.ts",
   "backend": { "command": ["node", "./backend/server.mjs"], "cwd": ".", "protocol": 1 },
   "routes": [

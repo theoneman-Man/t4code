@@ -22,6 +22,8 @@ import { SelectPopup as HostSelectPopup } from "../components/ui/select";
 export type * from "@t3tools/extension-sdk";
 export * from "@t3tools/extension-sdk/manifest";
 export * from "@t3tools/extension-sdk/protocol";
+export * from "@t3tools/extension-sdk/threads";
+export { useExtThreads } from "./threads";
 export type { ExtensionEvent } from "@t3tools/extension-sdk";
 export { Button } from "../components/ui/button";
 export { Badge } from "../components/ui/badge";

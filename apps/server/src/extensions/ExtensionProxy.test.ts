@@ -49,6 +49,8 @@ const harness = Effect.fn("ExtensionProxyTest.harness")(function* (
   const address = server.address();
   if (!address || typeof address === "string") return yield* Effect.die("Expected TCP address");
   const host = ExtensionHost.ExtensionHost.of({
+    threadHostUrl: "http://127.0.0.1:1234",
+    hasThreadPermission: () => Effect.succeed(false),
     backend: () =>
       Effect.succeed(
         available

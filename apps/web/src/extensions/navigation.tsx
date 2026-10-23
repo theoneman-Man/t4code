@@ -17,6 +17,13 @@ export function openWorkspace(id: string) {
 export function openPanel(id: string) {
   window.dispatchEvent(new CustomEvent(NAVIGATION_EVENT, { detail: { kind: "rightPanel", id } }));
 }
+export function openExtensionThread(environmentId: string, threadId: string) {
+  window.dispatchEvent(
+    new CustomEvent(NAVIGATION_EVENT, {
+      detail: { kind: "thread", id: threadId, environmentId },
+    }),
+  );
+}
 
 // Hash routes preserve the current chat URL and its search. The router owns history updates,
 // so reload and back/forward restore both the underlying thread and the selected workspace.
@@ -50,8 +57,21 @@ export function ExtensionNavigationBridge() {
   }, [hash, navigate, pathname]);
   useEffect(() => {
     const listener = (event: Event) => {
-      const detail = (event as CustomEvent<{ kind: "workspace" | "rightPanel"; id: string }>)
-        .detail;
+      const detail = (
+        event as CustomEvent<{
+          kind: "workspace" | "rightPanel" | "thread";
+          id: string;
+          environmentId?: string;
+        }>
+      ).detail;
+      if (detail.kind === "thread" && detail.environmentId) {
+        initialWorkspace.current = null;
+        void navigate({
+          to: "/$environmentId/$threadId",
+          params: { environmentId: detail.environmentId, threadId: detail.id },
+          hash: "",
+        });
+      }
       if (
         detail.kind === "workspace" &&
         (detail.id === "chat" || findExtensionSlot(detail.id, "workspace"))

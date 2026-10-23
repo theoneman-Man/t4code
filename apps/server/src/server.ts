@@ -28,7 +28,7 @@ import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 import * as ServerConfig from "./config.ts";
 import { withUntracedRequests } from "./http.ts";
 import * as ServerHttp from "./http.ts";
-import * as ExtensionHttp from "./extensions/http.ts";
+import * as ExtensionHttp from "./extensions/hostHttp.ts";
 import {
   guardHttpResponseWriteErrors,
   rejectRequestsUntilServing,

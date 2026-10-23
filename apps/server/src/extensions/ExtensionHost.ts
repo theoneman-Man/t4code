@@ -45,6 +45,8 @@ export class ExtensionHost extends Context.Service<
   ExtensionHost,
   {
     readonly status: Effect.Effect<ExtensionStatusResponse>;
+    readonly threadHostUrl: string;
+    readonly hasThreadPermission: (id: string) => Effect.Effect<boolean>;
     readonly resolveRoute: (
       method: string,
       rawUrl: string,
@@ -81,6 +83,14 @@ const loadFailureReason = (cause: unknown) => {
 };
 const make = Effect.fn("ExtensionHost.make")(function* (options: HostOptions) {
   const config = yield* ServerConfig.ServerConfig;
+  const callbackHost =
+    config.host === undefined || config.host === "0.0.0.0"
+      ? "127.0.0.1"
+      : config.host === "::"
+        ? "[::1]"
+        : config.host.includes(":")
+          ? `[${config.host}]`
+          : config.host;
   const inherited = yield* HostProcess.Environment;
   const executable = yield* HostProcess.ExecutablePath;
   const platform = yield* HostProcess.Platform;
@@ -190,6 +200,12 @@ const make = Effect.fn("ExtensionHost.make")(function* (options: HostOptions) {
   }
 
   return ExtensionHost.of({
+    threadHostUrl: `http://${callbackHost}:${config.port}`,
+    hasThreadPermission: Effect.fn("ExtensionHost.hasThreadPermission")((id) =>
+      Effect.sync(
+        () => entries.get(id)?.extension.manifest.permissions?.includes("threads") ?? false,
+      ),
+    ),
     status: Effect.sync(() => ({ extensions: [...entries.values()].map((entry) => entry.status) })),
     resolveRoute: Effect.fn("ExtensionHost.resolveRoute")((method, rawUrl) =>
       Effect.sync(() => routeScope(extensions, method, rawUrl)),
