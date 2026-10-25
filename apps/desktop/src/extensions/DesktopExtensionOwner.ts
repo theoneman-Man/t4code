@@ -120,6 +120,8 @@ export const make = Effect.fn("DesktopExtensionOwner.make")(function* (options: 
                 ready,
                 {
                   ...options,
+                  development: options.development === true && !packaged,
+                  onReload: () => setState("restarting", "Backend sources changed."),
                   ...(executable ? { executable } : {}),
                   environment,
                   onStarting: (descriptor) =>
@@ -242,6 +244,7 @@ export const makeForDesktop = Effect.fn("DesktopExtensionOwner.makeForDesktop")(
     platform: environment.platform,
     ...options,
     enabled: environment.isPackaged || environment.isDevelopment,
+    development: environment.isDevelopment && !environment.isPackaged,
     ...(environment.isPackaged ? { resourcesPath: environment.resourcesPath } : {}),
     stateDir: environment.stateDir,
     logsDir: environment.logDir,

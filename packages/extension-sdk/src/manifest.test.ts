@@ -1,6 +1,6 @@
-import * as FS from "node:fs";
-import * as OS from "node:os";
-import * as Path from "node:path";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -23,6 +23,30 @@ const manifest = {
 };
 
 describe("parseExtensionManifest", () => {
+  it("accepts optional development watch directories and globs without an SDK bump", () => {
+    const watch = ["./runtime", "shared/**/*.ts"];
+    expect(
+      parseExtensionManifest({ ...manifest, backend: { ...manifest.backend, watch } }).backend
+        ?.watch,
+    ).toEqual(watch);
+  });
+  it.each(
+    [
+      [],
+      [""],
+      ["../outside"],
+      ["/absolute"],
+      ["C:/absolute"],
+      ["runtime/../other"],
+      ["runtime\\main.ts"],
+      ["!web/**"],
+      "runtime",
+    ].map((watch) => [watch]),
+  )("rejects invalid watch selection %j", (watch) => {
+    expect(() =>
+      parseExtensionManifest({ ...manifest, backend: { ...manifest.backend, watch } }),
+    ).toThrow(/backend.watch/);
+  });
   it("accepts the frozen manifest shape", () => {
     expect(parseExtensionManifest(manifest)).toEqual(manifest);
   });
@@ -82,27 +106,30 @@ describe("extension list", () => {
   });
 
   it("loads nothing when the list file is absent", () => {
-    const dir = FS.mkdtempSync(Path.join(OS.tmpdir(), "ext-sdk-"));
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "ext-sdk-"));
     expect(loadExtensions(dir)).toEqual([]);
-    FS.rmSync(dir, { recursive: true, force: true });
+    NodeFS.rmSync(dir, { recursive: true, force: true });
   });
 
   it("resolves folders and rejects duplicate ids", () => {
-    const dir = FS.mkdtempSync(Path.join(OS.tmpdir(), "ext-sdk-"));
-    const ext = Path.join(dir, "ext");
-    FS.mkdirSync(ext);
-    FS.writeFileSync(Path.join(ext, "t4-extension.json"), JSON.stringify(manifest));
-    FS.writeFileSync(
-      Path.join(dir, "t4.extensions.json"),
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "ext-sdk-"));
+    const ext = NodePath.join(dir, "ext");
+    NodeFS.mkdirSync(ext);
+    NodeFS.writeFileSync(NodePath.join(ext, "t4-extension.json"), JSON.stringify(manifest));
+    NodeFS.writeFileSync(
+      NodePath.join(dir, "t4.extensions.json"),
       JSON.stringify([{ path: "./ext", dataDir: "./copied" }]),
     );
     const [loaded] = loadExtensions(dir);
     expect(loaded?.root).toBe(ext);
-    expect(loaded?.webEntry).toBe(Path.join(ext, "web", "index.ts"));
-    expect(loaded?.dataDir).toBe(Path.join(dir, "copied"));
+    expect(loaded?.webEntry).toBe(NodePath.join(ext, "web", "index.ts"));
+    expect(loaded?.dataDir).toBe(NodePath.join(dir, "copied"));
 
-    FS.writeFileSync(Path.join(dir, "t4.extensions.json"), JSON.stringify(["./ext", "ext"]));
+    NodeFS.writeFileSync(
+      NodePath.join(dir, "t4.extensions.json"),
+      JSON.stringify(["./ext", "ext"]),
+    );
     expect(() => loadExtensions(dir)).toThrow(/duplicate extension id/);
-    FS.rmSync(dir, { recursive: true, force: true });
+    NodeFS.rmSync(dir, { recursive: true, force: true });
   });
 });

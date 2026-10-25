@@ -5,6 +5,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeNet from "node:net";
 import * as NodePath from "node:path";
+import { watchBackendSources, probeBackendBusy } from "./devReload.ts";
 import type { ResolvedExtension } from "../node.ts";
 import {
   EXTENSION_BACKEND_ENV,
@@ -179,6 +180,9 @@ const gracefulStop = Effect.fn("ExtensionHost.gracefulStop")(
 );
 
 export interface ProcessOptions {
+  /** Explicitly enabled only by hosts running from development sources. */
+  readonly development?: boolean;
+  readonly onReload?: () => Effect.Effect<void>;
   readonly platform: NodeJS.Platform;
   readonly stateDir: string;
   readonly logsDir: string;
@@ -197,7 +201,7 @@ export const allocateEndpoint = Effect.fn("ExtensionHost.allocateEndpoint")(func
   };
 });
 
-export const launch = Effect.fn("ExtensionHost.launch")(function* (
+const launchChild = Effect.fn("ExtensionHost.launchChild")(function* (
   extension: ResolvedExtension,
   ready: Effect.Effect<void, never, Scope.Scope>,
   options: ProcessOptions,
@@ -261,6 +265,27 @@ export const launch = Effect.fn("ExtensionHost.launch")(function* (
         yield* stopChild(child, exited, options.platform);
       }),
   );
+  const sourceReload = yield* Effect.acquireRelease(
+    Effect.sync(() => {
+      let resume!: () => void;
+      const requested = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      const watcher = watchBackendSources({
+        development: options.development === true,
+        root: extension.root,
+        dataDir: descriptor.dataDir,
+        ...(extension.manifest.backend?.watch
+          ? { patterns: extension.manifest.backend.watch }
+          : {}),
+        busy: () => probeBackendBusy(descriptor),
+        reload: resume,
+        log: (message) => process.stdout.write("[extensions:" + id + "] " + message + "\n"),
+      });
+      return { requested, close: () => watcher.close() };
+    }),
+    (watcher) => Effect.sync(() => watcher.close()),
+  );
   yield* options.onStarting?.(descriptor) ?? Effect.void;
   yield* Effect.raceFirst(
     probe(descriptor),
@@ -270,5 +295,27 @@ export const launch = Effect.fn("ExtensionHost.launch")(function* (
   );
   yield* ready;
   yield* onReady(descriptor);
-  yield* Effect.promise(() => processHandle.exited);
+  return yield* Effect.raceFirst(
+    Effect.promise(() => processHandle.exited).pipe(Effect.as(false)),
+    Effect.promise(() => sourceReload.requested).pipe(Effect.as(true)),
+  );
+});
+
+// Planned reloads close the child scope (including graceful shutdown) before relaunching.
+// They do not spend the crash supervisor's bounded retry budget.
+export const launch = Effect.fn("ExtensionHost.launch")(function* (
+  extension: ResolvedExtension,
+  ready: Effect.Effect<void, never, Scope.Scope>,
+  options: ProcessOptions,
+  onReady: (descriptor: ReadyBackendDescriptor) => Effect.Effect<void>,
+  endpoint?: { readonly url: string; readonly token: string },
+) {
+  const stableEndpoint = endpoint ?? (options.development ? yield* allocateEndpoint() : undefined);
+  while (true) {
+    const reload = yield* Effect.scoped(
+      launchChild(extension, ready, options, onReady, stableEndpoint),
+    );
+    if (!reload) return;
+    yield* options.onReload?.() ?? Effect.void;
+  }
 });

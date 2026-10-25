@@ -46,6 +46,24 @@ hooks and are not listed. Keep each hook small: call into a host-owned module.
 | packages/shared/src/providerAuthReturnUrl.ts             | Validate branded desktop sign-in return URLs.                                                 | Keep: scheme helper is already separate; allowlist comparison belongs to shared return-URL validation.                                                                  |
 | packages/shared/src/codexAuthHandoff.ts                  | Generate and validate the configured Codex sign-in handoff scheme.                            | Keep: shared helper calls must cover both handoff generation and validation.                                                                                            |
 
+## Development backend reload
+
+The existing desktop and server owner hooks delegate development watching to the SDK; no new
+upstream hook is needed. Touched host-owned files for this change:
+
+| File                                                   | Reason                                                                                      |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| apps/desktop/src/extensions/DesktopExtensionOwner.ts   | Enable source reloads only in development and report restarting state.                      |
+| apps/server/src/extensions/ExtensionHost.ts            | Enable source reloads for source-run headless owners; borrowed backends stay desktop-owned. |
+| packages/extension-sdk/src/manifest.ts                 | Validate optional SDK 1 backend.watch source selectors.                                     |
+| packages/extension-sdk/src/manifest.test.ts            | Cover valid selectors and reject escaping/absolute paths.                                   |
+| packages/extension-sdk/src/protocol.ts                 | Type the optional authenticated busy probe.                                                 |
+| packages/extension-sdk/src/host/process.ts             | Close the child scope before planned relaunch and repeat readiness.                         |
+| packages/extension-sdk/src/host/devReload.ts           | Watch source content, debounce and defer while busy.                                        |
+| packages/extension-sdk/src/host/devReload.test.ts      | Verify watcher selection, debounce, deferral and production opt-out.                        |
+| packages/extension-sdk/src/host/reload-process.test.ts | Exercise actual graceful exit and stable-endpoint relaunch.                                 |
+| packages/extension-sdk/README.md                       | Document watch selection and optional busy protocol.                                        |
+
 ## General fixes
 
 | File                                                                         | Reason                                                                              | D1 review                                                                                                   |

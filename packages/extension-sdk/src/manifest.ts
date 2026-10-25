@@ -23,6 +23,8 @@ export interface ExtensionBackendManifest {
   readonly protocol: typeof EXTENSION_BACKEND_PROTOCOL;
   /** Default data directory; a host list entry may override it. */
   readonly dataDir?: string;
+  /** Development source selection, relative to the extension root. Defaults to the whole folder. */
+  readonly watch?: readonly string[];
 }
 
 export interface ExtensionManifest {
@@ -102,11 +104,30 @@ function parseBackend(value: unknown, source: string): ExtensionBackendManifest 
   if (value.dataDir !== undefined && !nonEmptyString(value.dataDir)) {
     throw new ExtensionManifestError(`${source}: backend.dataDir is invalid`);
   }
+  if (
+    value.watch !== undefined &&
+    (!Array.isArray(value.watch) ||
+      value.watch.length === 0 ||
+      !value.watch.every(
+        (pattern) =>
+          nonEmptyString(pattern) &&
+          !pattern.startsWith("/") &&
+          !pattern.includes("\\") &&
+          !pattern.includes(":") &&
+          !pattern.startsWith("!") &&
+          !pattern.split("/").includes(".."),
+      ))
+  ) {
+    throw new ExtensionManifestError(
+      source + ": backend.watch must be a non-empty array of relative globs or directories",
+    );
+  }
   const [first, ...rest] = command as string[];
   return {
     command: [first as string, ...rest],
     cwd,
     protocol: EXTENSION_BACKEND_PROTOCOL,
+    ...(value.watch === undefined ? {} : { watch: value.watch as string[] }),
     ...(value.dataDir === undefined ? {} : { dataDir: value.dataDir as string }),
   };
 }

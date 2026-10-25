@@ -12,6 +12,13 @@ export const EXTENSION_BACKEND_ENV = {
 
 /** Backend readiness probe; answered with `ExtensionBackendReady` (bearer required). */
 export const EXTENSION_READY_PATH = "/.t4/ready";
+/** Optional authenticated GET. Hosts defer development reloads while busy; 404/405 means unsupported. */
+export const EXTENSION_BUSY_PATH = "/.t4/busy";
+export interface ExtensionBackendBusy {
+  readonly busy: boolean;
+  readonly reason?: string;
+}
+
 export const EXTENSION_READY_TIMEOUT_MS = 60_000;
 export const EXTENSION_MAX_RESTARTS = 5;
 

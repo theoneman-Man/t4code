@@ -185,6 +185,11 @@ const make = Effect.fn("ExtensionHost.make")(function* (options: HostOptions) {
                 extension,
                 ready,
                 {
+                  // Bundled servers never watch, even if a dev URL was supplied externally.
+                  development:
+                    config.devUrl !== undefined &&
+                    import.meta.url.endsWith("/src/extensions/ExtensionHost.ts"),
+                  onReload: () => setState(id, "restarting", undefined, "Backend sources changed."),
                   platform,
                   stateDir: config.stateDir,
                   logsDir: config.logsDir,

@@ -52,6 +52,22 @@ back immediately. Redirects are rejected so the bearer stays at the launched end
 Backends without this route continue to work. Windows process-tree termination cannot deliver
 SIGTERM, so backends that need clean finalization should implement the HTTP step.
 
+Development source hosts watch each owned backend's extension folder and debounce changes for
+750 ms. Packaged hosts never subscribe. Set optional SDK 1 field `backend.watch` to a non-empty
+array of relative directories or globs to select backend sources (for example
+`["runtime", "shared/**/*.ts"]`); web sources served by Vite can be left out. Dependencies,
+build output, data directories, logs and the resolved backend data directory are ignored.
+A planned reload uses the same graceful shutdown, waits for exit and repeats readiness without
+spending the crash retry budget. Desktop owns this watcher when it owns the child; borrowed
+servers do not watch or restart it.
+
+Backends may implement authenticated `GET /.t4/busy` returning `{ busy: boolean, reason?: string }`.
+Report active work that a restart would interrupt, with a short reason; human gates can be idle.
+A busy reply keeps one pending reload, rechecks every 3 seconds and logs the reason once.
+Additional edits join that pending reload. HTTP 404/405 means unsupported and reloads immediately
+after the debounce. Other probe failures defer until the endpoint responds again. Reload logs
+include the number of distinct changed files. This endpoint is optional in protocol 1.
+
 ## Typechecking an external folder
 
 Given a host checkout at `C:/dev/host` and an extension at any other location, use this exact
