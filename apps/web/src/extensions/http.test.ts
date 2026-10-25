@@ -68,6 +68,7 @@ function deferred<T>() {
 }
 
 it("keeps backend paths inside the extension proxy", () => {
+  expect(() => extensionPath("sample", "#review-image-1")).toThrow();
   expect(extensionPath("sample", "/hello?name=a%20b")).toBe("/ext/sample/hello?name=a%20b");
   for (const path of [
     "https://other.test",

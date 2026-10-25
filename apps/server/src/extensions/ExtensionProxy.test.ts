@@ -251,3 +251,29 @@ it.live("logs why an unavailable backend returns 503", () => {
     }),
   ).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
 });
+
+it.live("forwards validators and passes cacheable 304 responses through", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const proxy = yield* harness((request, response) => {
+        expect(request.headers["if-none-match"]).toBe('"v1"');
+        expect(request.headers["if-modified-since"]).toBe("Sun, 25 Oct 2026 08:00:00 GMT");
+        response.writeHead(304, { etag: '"v1"', "cache-control": "private, max-age=60" });
+        response.end();
+      });
+      const request = HttpServerRequest.fromWeb(
+        new Request("http://host/ext/sample/file", {
+          headers: {
+            "if-none-match": '"v1"',
+            "if-modified-since": "Sun, 25 Oct 2026 08:00:00 GMT",
+          },
+        }),
+      );
+      const response = yield* proxy.forward(request, target);
+      expect(response.status).toBe(304);
+      expect(response.headers["cache-control"]).toBe("private, max-age=60");
+      expect(response.headers.etag).toBe('"v1"');
+      expect(response.body._tag).toBe("Empty");
+    }),
+  ),
+);

@@ -260,6 +260,21 @@ const COMPOSER_CONTEXT_MAX_SERIALIZED_CHARS = 16_000_000;
 
 /** Structured context riding on a user message. Undecodable records are dropped, not fatal. */
 export const OrchestrationMessageContext = Schema.Struct({
+  extensionMedia: Schema.optional(
+    Schema.Struct({
+      extensionId: TrimmedNonEmptyString.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,39}$/)),
+      items: Schema.Array(
+        Schema.Struct({
+          path: TrimmedNonEmptyString.check(
+            Schema.isMaxLength(2048),
+            Schema.isPattern(/^\/(?!\/)[^#\\]*$/),
+          ),
+          name: Schema.optional(Schema.String.check(Schema.isMaxLength(255))),
+          mimeType: Schema.optional(Schema.String.check(Schema.isMaxLength(100))),
+        }),
+      ).check(Schema.isMaxLength(24)),
+    }),
+  ),
   version: Schema.Literal(1),
   records: Schema.Array(Schema.Unknown)
     .check(

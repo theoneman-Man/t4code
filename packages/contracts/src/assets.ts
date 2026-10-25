@@ -12,6 +12,13 @@ import { ToolActivityNativeAppReference } from "./providerRuntime.ts";
 const ASSET_PATH_MAX_LENGTH = 1024;
 
 export const AssetResource = Schema.Union([
+  Schema.TaggedStruct("extension-media", {
+    extensionId: TrimmedNonEmptyString.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,39}$/)),
+    path: TrimmedNonEmptyString.check(
+      Schema.isMaxLength(2048),
+      Schema.isPattern(/^\/(?!\/)[^#\\]*$/),
+    ),
+  }),
   Schema.TaggedStruct("workspace-file", {
     threadId: ThreadId,
     path: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
@@ -71,6 +78,7 @@ export type AssetImageDimensions = typeof AssetImageDimensions.Type;
 export const AssetCreateUrlResult = Schema.Struct({
   relativeUrl: TrimmedNonEmptyString.check(Schema.isMaxLength(4096)),
   expiresAt: Schema.Number,
+  ttlMs: Schema.optional(Schema.Number),
   sourcePath: Schema.optional(
     TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
   ),

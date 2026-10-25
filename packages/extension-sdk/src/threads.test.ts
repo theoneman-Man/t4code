@@ -1,5 +1,6 @@
+import * as Schema from "effect/Schema";
 import { expect, it } from "vite-plus/test";
-import { createThreadClient, createBackendThreadClient } from "./threads.ts";
+import { createThreadClient, createBackendThreadClient, ThreadReadResult } from "./threads.ts";
 import { parseExtensionManifest } from "./manifest.ts";
 
 it("declares the optional threads permission and rejects unknown permissions", () => {
@@ -50,4 +51,48 @@ it("uses only the owned-thread host paths and validates host replies", async () 
   await expect(
     invalid.launchThread({ title: "Manager", prompt: "Review", idempotencyKey: "one" }),
   ).rejects.toThrow();
+});
+
+it("sends media references without copying attachments and limits media", async () => {
+  const bodies: unknown[] = [];
+  const client = createThreadClient(async (_path, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return Response.json({ threadId: "owned" });
+  });
+  const media = [{ path: "/files/gate.png?v=one", name: "Gate", mimeType: "image/png" }];
+  await client.launchThread({ title: "Gate", prompt: "Review", idempotencyKey: "gate", media });
+  await client.sendToThread("owned", "Review gate", media);
+  expect(bodies).toEqual([
+    { title: "Gate", prompt: "Review", idempotencyKey: "gate", media },
+    { text: "Review gate", media },
+  ]);
+  await expect(
+    client.sendToThread(
+      "owned",
+      "Too many",
+      Array.from({ length: 25 }, () => media[0]!),
+    ),
+  ).rejects.toThrow();
+  await expect(
+    client.sendToThread("owned", "Invalid", [{ path: "https://other/image.png" }]),
+  ).rejects.toThrow();
+});
+
+it("preserves the owning extension when decoding readback media", () => {
+  const result = Schema.decodeUnknownSync(ThreadReadResult)({
+    threadId: "owned",
+    status: "idle",
+    after: null,
+    messages: [
+      {
+        id: "m",
+        role: "user",
+        text: "Gate",
+        streaming: false,
+        extensionId: "sample",
+        media: [{ path: "/gate.jpg" }],
+      },
+    ],
+  });
+  expect(result.messages[0]?.extensionId).toBe("sample");
 });

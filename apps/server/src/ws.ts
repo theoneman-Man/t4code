@@ -1,3 +1,4 @@
+import * as ExtensionHost from "./extensions/ExtensionHost.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -1190,6 +1191,7 @@ export const layerWsRpc = (
   ServerWsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
+      const extensionHost = yield* ExtensionHost.ExtensionHost;
       const sql = yield* SqlClient.SqlClient;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
       const intakeContext = yield* Effect.context<
@@ -2716,20 +2718,25 @@ export const layerWsRpc = (
           /* Request instrumentation already owns the span; keep this helper in that context. */
           Effect.fnUntraced(function* (input) {
             const path = yield* Path.Path;
+
             if (
+              input.resource._tag === "extension-media" ||
               input.resource._tag === "attachment" ||
               input.resource._tag === "native-app-icon" ||
               input.resource._tag === "tool-output-image" ||
               input.resource._tag === "github-media" ||
               (input.resource._tag === "media-file" && path.isAbsolute(input.resource.path))
             ) {
-              return yield* issueAssetUrl({ resource: input.resource });
+              return yield* issueAssetUrl({
+                resource: input.resource,
+                scopes: currentSession.scopes,
+              }).pipe(Effect.provideService(ExtensionHost.ExtensionHost, extensionHost));
             }
             if (input.resource._tag === "draft-workspace-file") {
               return yield* issueAssetUrl({
                 resource: input.resource,
                 workspaceRoot: input.resource.cwd,
-              });
+              }).pipe(Effect.provideService(ExtensionHost.ExtensionHost, extensionHost));
             }
             if (input.resource._tag === "project-favicon") {
               const project = yield* projectStore
@@ -2759,7 +2766,7 @@ export const layerWsRpc = (
                 ...(clone !== null && clone.destinationPath === project.value.workspaceRoot
                   ? { projectCheckout: clone.phase === "done" ? "cloned" : "pending" }
                   : {}),
-              });
+              }).pipe(Effect.provideService(ExtensionHost.ExtensionHost, extensionHost));
             }
             const thread = yield* threadManagement
               .getThreadRecords(input.resource.threadId, [])
@@ -2789,7 +2796,7 @@ export const layerWsRpc = (
             return yield* issueAssetUrl({
               resource: input.resource,
               workspaceRoot: thread.thread.worktreePath ?? project.value.workspaceRoot,
-            });
+            }).pipe(Effect.provideService(ExtensionHost.ExtensionHost, extensionHost));
           }),
         [WS_METHODS.assetsPersistChatAttachments]: (input) =>
           persistChatAttachments(input).pipe(Effect.map((attachments) => ({ attachments }))),
@@ -3133,6 +3140,7 @@ export const WS_RPC_SERVER_OPTIONS = {
 
 export const layer = Layer.unwrap(
   Effect.gen(function* () {
+    const extensionHost = yield* ExtensionHost.ExtensionHost;
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const serverBrowser = yield* ServerBrowser.ServerBrowser;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
@@ -3211,6 +3219,7 @@ export const layer = Layer.unwrap(
               previewAutomationBroker,
               serverBrowser,
             ).pipe(
+              Layer.provide(Layer.succeed(ExtensionHost.ExtensionHost, extensionHost)),
               Layer.provideMerge(RpcSerialization.layerJson),
               // Request fibers run in the handlers' context, so this reporter sees
               // their defects, not the rest of the server's.

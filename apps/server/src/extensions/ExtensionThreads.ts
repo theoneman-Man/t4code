@@ -1,6 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Hashes make receipt paths independent of extension input.
 import * as NodeCrypto from "node:crypto";
-import { LaunchThreadInput, type ThreadReadResult } from "@t3tools/extension-sdk/threads";
+import {
+  LaunchThreadInput,
+  type ThreadMedia,
+  type ThreadReadResult,
+} from "@t3tools/extension-sdk/threads";
 import type { ExtensionEvent } from "@t3tools/extension-sdk/protocol";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -39,6 +43,7 @@ export class ExtensionThreads extends Context.Service<
       extensionId: string,
       threadId: string,
       text: string,
+      media?: ThreadMedia,
     ) => Effect.Effect<void, Operations.ExtensionThreadError>;
     readonly readThread: (
       extensionId: string,
@@ -114,14 +119,14 @@ const make = Effect.gen(function* () {
         // Persist the chosen defaults before dispatch, so retry after a crash uses the same command.
         yield* save(id, receipt);
       }
-      yield* operations.launch(id, receipt.input, receipt.prepared);
+      yield* operations.launch(id, receipt.input, receipt.prepared, extensionId);
       yield* save(id, { ...receipt, accepted: true });
       return id;
     }, lock.withPermit),
     sendToThread: Effect.fn("ExtensionThreads.sendToThread")(
-      function* (extensionId, threadId, text) {
+      function* (extensionId, threadId, text, media) {
         yield* assertOwned(extensionId, threadId);
-        yield* operations.send(threadId, text);
+        yield* operations.send(threadId, text, media, extensionId);
       },
     ),
     readThread: Effect.fn("ExtensionThreads.readThread")(function* (extensionId, threadId, after) {

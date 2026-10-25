@@ -571,3 +571,45 @@ describe("latestProviderTurnForAttempt", () => {
     expect(latestProviderTurnForAttempt(turns, null)).toBeUndefined();
   });
 });
+
+it("rejects extension media on every client message command and launch", () => {
+  const context = {
+    version: 1,
+    records: [],
+    extensionMedia: { extensionId: "other", items: [{ path: "/file.png" }] },
+  };
+  const decode = Schema.decodeUnknownSync(OrchestrationV2RpcSchemas.dispatchCommand.input);
+  for (const command of [
+    {
+      type: "message.dispatch",
+      createdBy: "user",
+      creationSource: "web",
+      commandId: "c",
+      threadId: "t",
+      messageId: "m",
+      text: "hello",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+    },
+    { type: "queued-run.edit", commandId: "c", threadId: "t", runId: "r", text: "hello" },
+  ]) {
+    expect(() => decode(command)).not.toThrow();
+    expect(() => decode({ ...command, context })).toThrow();
+    expect(() => decode({ ...command, context: { version: 1, records: [] } })).not.toThrow();
+  }
+  const launch = {
+    commandId: "c",
+    projectId: "p",
+    title: "Test",
+    modelSelection: { instanceId: "fake", model: "fake" },
+    runtimeMode: "approval-required",
+    interactionMode: "default",
+    workspaceStrategy: { type: "root" },
+    initialMessage: { text: "hello", attachments: [] },
+  };
+  const decodeLaunch = Schema.decodeUnknownSync(OrchestrationV2RpcSchemas.launchThread.input);
+  expect(() => decodeLaunch(launch)).not.toThrow();
+  expect(() =>
+    decodeLaunch({ ...launch, initialMessage: { ...launch.initialMessage, context } }),
+  ).toThrow();
+});

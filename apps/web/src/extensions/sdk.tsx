@@ -1,3 +1,8 @@
+import { EnvironmentId } from "@t3tools/contracts";
+import { assetEnvironment } from "../state/assets";
+import { useAtomQueryRunner } from "../state/use-atom-query-runner";
+import { usePreparedConnection } from "../state/session";
+import { extensionMediaUrls, mediaRefreshDelay } from "./media";
 import { useEffect, useEffectEvent, useState, type ComponentProps } from "react";
 import { extensionEventStreams } from "./events";
 import { useExtensionRuntime, useExtensionPortalProps } from "./context";
@@ -148,26 +153,57 @@ export function useExtEvents(topic: string, onEvent: (event: ExtensionEvent) => 
   );
 }
 export function useExtMediaUrl(path: string): string | null {
-  const fetch = useExtFetch();
-  const [media, setMedia] = useState<{ path: string; url: string; fetch: typeof fetch } | null>(
-    null,
-  );
+  const { extensionId, context, fetch } = useExtensionRuntime();
+  const environmentId = EnvironmentId.make(context.environmentId);
+  const connection = usePreparedConnection(environmentId);
+  const baseUrl = connection._tag === "Some" ? connection.value.httpBaseUrl : null;
+  const issue = useAtomQueryRunner(assetEnvironment.createUrl, {
+    reportFailure: false,
+    refresh: true,
+  });
+  const issueUrl = useEffectEvent(async () => {
+    const result = await issue({
+      environmentId,
+      input: { resource: { _tag: "extension-media", extensionId, path } },
+    });
+    if (result._tag !== "Success") throw new Error("Extension media URL unavailable.");
+    return {
+      url: result.value.relativeUrl,
+      expiresAt: result.value.expiresAt,
+      ttlMs: result.value.ttlMs,
+    };
+  });
+  const key = JSON.stringify([environmentId, extensionId, path]);
+  const [media, setMedia] = useState<{ key: string; url: string } | null>(null);
   useEffect(() => {
+    if (!baseUrl) return;
     const abort = new AbortController();
-    let url: string | undefined;
-    void fetch(path, { signal: abort.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Extension media unavailable.");
-        const blob = await response.blob();
+    let blobUrl: string | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = async () => {
+      try {
+        const value = await extensionMediaUrls(key, () => issueUrl());
         if (abort.signal.aborted) return;
-        url = URL.createObjectURL(blob);
-        setMedia({ path, url, fetch });
-      })
-      .catch(() => {});
+        setMedia({ key, url: new URL(value.url, baseUrl).href });
+        timer = setTimeout(() => void load(), mediaRefreshDelay(value.expiresAt));
+      } catch {
+        if (abort.signal.aborted) return;
+        try {
+          const response = await fetch(path, { signal: abort.signal });
+          if (!response.ok) return;
+          const blob = await response.blob();
+          if (abort.signal.aborted) return;
+          blobUrl = URL.createObjectURL(blob);
+          setMedia({ key, url: blobUrl });
+        } catch {}
+      }
+    };
+    void load();
     return () => {
       abort.abort();
-      if (url) URL.revokeObjectURL(url);
+      clearTimeout(timer);
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
-  }, [fetch, path]);
-  return media?.path === path && media.fetch === fetch ? media.url : null;
+  }, [baseUrl, fetch, key, path]);
+  return media?.key === key ? media.url : null;
 }

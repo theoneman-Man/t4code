@@ -1,3 +1,4 @@
+import { ExtensionMessageMedia } from "../../extensions/MessageMedia";
 import { findRevealRef } from "./markdownFindContext";
 import { type MessageId, type ServerProviderSkill, ThreadId } from "@t3tools/contracts";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
@@ -179,6 +180,11 @@ function AutomationMessageRow({ row }: { row: Extract<TimelineRow, { kind: "mess
             )}
           />
         </button>
+        <ExtensionMessageMedia
+          environmentId={ctx.activeThreadEnvironmentId}
+          media={row.message.context?.extensionMedia}
+          onExpand={ctx.onImageExpand}
+        />
         {bodyMounted ? (
           // `beforematch` does not bubble, so the reveal listener sits on the hidden fold itself.
           <div
@@ -408,6 +414,11 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       ) : null}
       <div className="relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground">
         <MessageAuthorHeading>You</MessageAuthorHeading>
+        <ExtensionMessageMedia
+          environmentId={ctx.activeThreadEnvironmentId}
+          media={row.message.context?.extensionMedia}
+          onExpand={ctx.onImageExpand}
+        />
         {(regularImages.length > 0 || userVideos.length > 0) && (
           <div className="mb-2 grid max-w-[210px] grid-cols-2 gap-2">
             {regularImages.map((image) => (

@@ -1,3 +1,9 @@
+import * as ExtensionProxy from "../extensions/ExtensionProxy.ts";
+import { HttpServerRequest } from "effect/http";
+import { extensionMediaResponse } from "./AssetAccess.ts";
+import * as Stream from "effect/Stream";
+import * as ExtensionHost from "../extensions/ExtensionHost.ts";
+import * as TestClock from "effect/testing/TestClock";
 // @effect-diagnostics nodeBuiltinImport:off - tests inject swaps at the native open boundary.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeHttpPlatform from "@effect/platform-node/NodeHttpPlatform";
@@ -95,6 +101,20 @@ const oversizedScreenshotItem = {
 };
 
 const layerTest = Layer.mergeAll(
+  Layer.mock(ExtensionHost.ExtensionHost, {
+    threadHostUrl: "unused",
+    resolveRoute: (_method, rawUrl) =>
+      Effect.succeed(
+        rawUrl.startsWith("/ext/sample/files/")
+          ? {
+              id: "sample",
+              path: rawUrl.slice("/ext/sample".length).split("?")[0]!,
+              search: "",
+              scope: "read" as const,
+            }
+          : undefined,
+      ),
+  }),
   NodeHttpPlatform.layer,
   Layer.mock(Orchestrator.OrchestratorV2)({
     getTurnItem: ({ itemId }) =>
@@ -231,7 +251,7 @@ describe("AssetAccess", () => {
         itemId: screenshotItem.id,
         index: 0,
       };
-      const result = yield* issueAssetUrl({ resource });
+      const result = yield* issueAssetUrl({ resource, scopes: ["orchestration:read"] });
       expect(result.imageDimensions).toEqual({ width: 390, height: 844 });
       const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
       const separator = suffix.indexOf("/");
@@ -960,9 +980,178 @@ describe("AssetAccess", () => {
       ]) {
         const error = yield* issue(url).pipe(Effect.flip);
         expect(error._tag).toBe("AssetGitHubMediaUrlValidationError");
+        if (error._tag !== "AssetGitHubMediaUrlValidationError")
+          return yield* Effect.die("Expected URL validation failure");
         const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(AssetAccessError))(error);
         expect(encoded).not.toContain(url);
       }
     }).pipe(Effect.provide(layerTest)),
   );
 });
+
+it.effect("issues stable extension media URLs, validates routes and expires tokens", () =>
+  Effect.gen(function* () {
+    const resource = {
+      _tag: "extension-media" as const,
+      extensionId: "sample",
+      path: "/files/image.png?v=one",
+    };
+    const denied = yield* issueAssetUrl({ resource }).pipe(Effect.flip);
+    expect(denied._tag).toBe("EnvironmentAuthorizationError");
+    const first = yield* issueAssetUrl({ resource, scopes: ["orchestration:read"] });
+    const same = yield* issueAssetUrl({ resource, scopes: ["orchestration:read"] });
+    expect(same).toEqual(first);
+    const suffix = first.relativeUrl.slice(ASSET_ROUTE_PREFIX.length + 1);
+    const separator = suffix.indexOf("/");
+    const token = suffix.slice(0, separator);
+    expect(yield* resolveAsset(token, "media")).toEqual({
+      kind: "extension-media",
+      extensionId: "sample",
+      scope: "read",
+      path: resource.path,
+    });
+    expect(yield* resolveAsset(token + "tampered", "media")).toBeNull();
+    yield* TestClock.adjust("5 hours");
+    expect(yield* resolveAsset(token, "media")).not.toBeNull();
+    yield* TestClock.adjust("8 hours");
+    expect(yield* resolveAsset(token, "media")).toBeNull();
+    const error = yield* issueAssetUrl({
+      resource: { ...resource, path: "/undeclared" },
+      scopes: ["orchestration:read"],
+    }).pipe(Effect.flip);
+    expect(error._tag).toBe("AssetPreviewTypeValidationError");
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "streams signed extension media through the proxy with validators and caching metadata",
+  () =>
+    Effect.gen(function* () {
+      let scope: "read" | "operate" = "read";
+      const host = ExtensionHost.ExtensionHost.of({
+        threadHostUrl: "http://host",
+        status: Effect.succeed({ extensions: [] }),
+        hasThreadPermission: () => Effect.succeed(false),
+        awaitState: () => Effect.succeed({ id: "sample", backend: "ready" }),
+        backend: () =>
+          Effect.succeed({
+            extensionId: "sample",
+            url: "http://backend",
+            token: "test",
+            instanceId: "test",
+            dataDir: "unused",
+          }),
+        resolveRoute: (_method, rawUrl) =>
+          Effect.succeed(
+            rawUrl === "/ext/sample/files/image.png?v=one"
+              ? { id: "sample", path: "/files/image.png", search: "?v=one", scope }
+              : undefined,
+          ),
+      });
+      let contentType = "image/png";
+      let expectedScope = "read";
+      const client = HttpClient.make((request) => {
+        expect(request.headers["x-t4-scope"]).toBe(expectedScope);
+        expect(request.url).toBe("http://backend/files/image.png?v=one");
+        expect(request.headers["if-none-match"]).toBe('"previous"');
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response("image bytes", {
+              headers: {
+                "content-type": contentType,
+                "content-length": "11",
+                "cache-control": "private, max-age=31536000, immutable",
+                etag: '"one"',
+              },
+            }),
+          ),
+        );
+      });
+      const issued = yield* issueAssetUrl({
+        resource: {
+          _tag: "extension-media",
+          extensionId: "sample",
+          path: "/files/image.png?v=one",
+        },
+        scopes: ["orchestration:read"],
+      }).pipe(Effect.provideService(ExtensionHost.ExtensionHost, host));
+      const suffix = issued.relativeUrl.slice(ASSET_ROUTE_PREFIX.length + 1);
+      const asset = yield* resolveAsset(suffix.slice(0, suffix.indexOf("/")), "media");
+      if (asset?.kind !== "extension-media") return yield* Effect.die("Expected extension media");
+      const request = HttpServerRequest.fromWeb(
+        new Request("http://host" + issued.relativeUrl, {
+          headers: { "if-none-match": '"previous"' },
+        }),
+      );
+      const response = yield* extensionMediaResponse(asset, request).pipe(
+        Effect.provide(
+          ExtensionProxy.layer.pipe(
+            Layer.provide(Layer.succeed(HttpClient.HttpClient, client)),
+            Layer.provide(Layer.succeed(ExtensionHost.ExtensionHost, host)),
+          ),
+        ),
+        Effect.provideService(ExtensionHost.ExtensionHost, host),
+      );
+      expect(response.headers["x-content-type-options"]).toBe("nosniff");
+      const serve = (value = asset) =>
+        extensionMediaResponse(value, request).pipe(
+          Effect.provide(
+            ExtensionProxy.layer.pipe(
+              Layer.provide(Layer.succeed(HttpClient.HttpClient, client)),
+              Layer.provide(Layer.succeed(ExtensionHost.ExtensionHost, host)),
+            ),
+          ),
+          Effect.provideService(ExtensionHost.ExtensionHost, host),
+        );
+      for (const unsafe of ["text/html", "application/json", "image/svg+xml", ""]) {
+        contentType = unsafe;
+        const refused = yield* serve();
+        expect(refused.status).toBe(415);
+        expect(refused.body._tag).toBe("Empty");
+      }
+      contentType = "image/webp";
+      expect((yield* serve()).status).toBe(200);
+      scope = "operate";
+      expect((yield* serve()).status).toBe(403);
+      scope = "read";
+      expect((yield* serve()).status).toBe(200);
+      scope = "operate";
+      const denied = yield* issueAssetUrl({
+        resource: {
+          _tag: "extension-media",
+          extensionId: "sample",
+          path: "/files/image.png?v=one",
+        },
+        scopes: ["orchestration:read"],
+      }).pipe(Effect.provideService(ExtensionHost.ExtensionHost, host), Effect.flip);
+      expect(denied._tag).toBe("EnvironmentAuthorizationError");
+      const allowed = yield* issueAssetUrl({
+        resource: {
+          _tag: "extension-media",
+          extensionId: "sample",
+          path: "/files/image.png?v=one",
+        },
+        scopes: ["orchestration:operate"],
+      }).pipe(Effect.provideService(ExtensionHost.ExtensionHost, host));
+      expect(allowed.relativeUrl).toContain(ASSET_ROUTE_PREFIX);
+      const operatedToken = allowed.relativeUrl.slice(ASSET_ROUTE_PREFIX.length + 1).split("/")[0]!;
+      const operated = yield* resolveAsset(operatedToken, "media");
+      if (operated?.kind !== "extension-media") return yield* Effect.die("Expected operated media");
+      scope = "read";
+      expectedScope = "operate";
+      expect((yield* serve(operated)).status).toBe(200);
+      expect(response.status).toBe(200);
+      expect(response.headers["cache-control"]).toBe("private, max-age=31536000, immutable");
+      expect(response.headers["content-length"]).toBe("11");
+      expect(response.headers.etag).toBe('"one"');
+      if (response.body._tag !== "Stream") return yield* Effect.die("Expected stream");
+      expect(
+        (yield* response.body.stream.pipe(
+          Stream.decodeText(),
+          Stream.runCollect,
+          Effect.orDie,
+        )).join(""),
+      ).toBe("image bytes");
+    }).pipe(Effect.provide(layerTest)),
+);

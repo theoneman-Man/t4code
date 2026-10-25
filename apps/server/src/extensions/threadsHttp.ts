@@ -75,7 +75,7 @@ const handler = Effect.gen(function* () {
   if (match[2] === "/messages" && request.method === "POST") {
     const body = yield* request.json.pipe(Effect.mapError(invalid));
     const input = yield* decodeSend(body).pipe(Effect.mapError(invalid));
-    yield* service.sendToThread(target.id, threadId, input.text);
+    yield* service.sendToThread(target.id, threadId, input.text, input.media);
     return HttpServerResponse.jsonUnsafe({});
   }
   if (match[2] === "/events" && request.method === "GET") {

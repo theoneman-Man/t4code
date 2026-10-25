@@ -39,28 +39,39 @@ const make = Effect.gen(function* () {
         return yield* new ExtensionThreadError({ status: 400, reason: "invalid_request" });
       return { projectId, modelSelection: defaults.defaultModelSelection };
     }),
-    launch: Effect.fn("ExtensionThreads.launchProvider")(function* (id, input, prepared) {
-      yield* launches
-        .launch({
-          commandId: CommandId.make(id),
-          threadId: ThreadId.make(id),
-          projectId: ProjectId.make(prepared.projectId),
-          title: input.title,
-          modelSelection: prepared.modelSelection,
-          runtimeMode: "approval-required",
-          interactionMode: "default",
-          workspaceStrategy: { type: "root" },
-          createdBy: "agent",
-          creationSource: "mcp",
-          initialMessage: {
-            messageId: MessageId.make(id),
-            text: input.instructions ? `${input.instructions}\n\n${input.prompt}` : input.prompt,
-            attachments: [],
-          },
-        })
-        .pipe(Effect.mapError(unavailable));
-    }),
-    send: Effect.fn("ExtensionThreads.sendProvider")(function* (id, text) {
+    launch: Effect.fn("ExtensionThreads.launchProvider")(
+      function* (id, input, prepared, extensionId) {
+        yield* launches
+          .launch({
+            commandId: CommandId.make(id),
+            threadId: ThreadId.make(id),
+            projectId: ProjectId.make(prepared.projectId),
+            title: input.title,
+            modelSelection: prepared.modelSelection,
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            workspaceStrategy: { type: "root" },
+            createdBy: "agent",
+            creationSource: "mcp",
+            initialMessage: {
+              messageId: MessageId.make(id),
+              text: input.instructions ? `${input.instructions}\n\n${input.prompt}` : input.prompt,
+              attachments: [],
+              ...(extensionId && input.media?.length
+                ? {
+                    context: {
+                      version: 1 as const,
+                      records: [],
+                      extensionMedia: { extensionId, items: input.media },
+                    },
+                  }
+                : {}),
+            },
+          })
+          .pipe(Effect.mapError(unavailable));
+      },
+    ),
+    send: Effect.fn("ExtensionThreads.sendProvider")(function* (id, text, media, extensionId) {
       const threadId = ThreadId.make(id);
       const shell = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
       if (!shell || shell.deletedAt !== null)
@@ -74,6 +85,15 @@ const make = Effect.gen(function* () {
           messageId: MessageId.make(commandId),
           text,
           attachments: [],
+          ...(extensionId && media?.length
+            ? {
+                context: {
+                  version: 1 as const,
+                  records: [],
+                  extensionMedia: { extensionId, items: media },
+                },
+              }
+            : {}),
           mode: "auto",
           createdBy: "agent",
           creationSource: "mcp",
@@ -107,6 +127,12 @@ const make = Effect.gen(function* () {
                   id: item.messageId,
                   role: item.type === "user_message" ? ("user" as const) : ("assistant" as const),
                   text: item.text,
+                  ...(item.type === "user_message" && item.context?.extensionMedia
+                    ? {
+                        media: item.context.extensionMedia.items,
+                        extensionId: item.context.extensionMedia.extensionId,
+                      }
+                    : {}),
                   streaming: item.type === "assistant_message" && item.streaming,
                 },
               ]

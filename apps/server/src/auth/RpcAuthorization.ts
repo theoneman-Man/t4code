@@ -253,6 +253,8 @@ const requiredScopesForRpcCall = (
   }
   if (method === WS_METHODS.assetsCreateUrl) {
     const { resource } = Schema.decodeUnknownSync(AssetCreateUrlInput)(payload);
+    // GET routes can require operate; AssetAccess checks the declared scope before signing.
+    if (resource._tag === "extension-media") return [];
     return [
       resource._tag === "workspace-file" ||
       resource._tag === "media-file" ||

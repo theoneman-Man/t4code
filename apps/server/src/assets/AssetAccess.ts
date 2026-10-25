@@ -1,3 +1,12 @@
+import * as ExtensionProxy from "../extensions/ExtensionProxy.ts";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
+import {
+  AuthOrchestrationReadScope,
+  AuthOrchestrationOperateScope,
+  EnvironmentAuthorizationError,
+  authScopeRequiredResponse,
+  type AuthEnvironmentScope,
+} from "@t3tools/contracts";
 import type { AssetResource } from "@t3tools/contracts";
 import {
   AssetAttachmentNotFoundError,
@@ -54,6 +63,7 @@ import {
   signPayload,
   timingSafeEqualBase64Url,
 } from "../auth/utils.ts";
+import * as ExtensionHost from "../extensions/ExtensionHost.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { parseAttachmentFileExtension, resolveAttachmentPathById } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
@@ -71,6 +81,7 @@ export const ASSET_ROUTE_PREFIX = "/api/assets";
 const SIGNING_SECRET_NAME = "asset-access-signing-key";
 const ASSET_TOKEN_TTL_MS = 60 * 60 * 1000;
 const PROJECT_FAVICON_TOKEN_BUCKET_MS = 30 * 60 * 1000;
+const EXTENSION_MEDIA_TOKEN_BUCKET_MS = 6 * 60 * 60 * 1000;
 const HTML_ATTACHMENT_TOKEN_BUCKET_MS = 30 * 60 * 1000;
 const PROJECT_FAVICON_VERSION_PREFIX = "v";
 const PROJECT_FAVICON_ICNS_MIN_SIZE = 96;
@@ -97,6 +108,14 @@ const PREVIEW_ASSET_EXTENSIONS = new Set([
 ]);
 
 const AssetClaimsSchema = Schema.Union([
+  Schema.Struct({
+    version: Schema.Literal(1),
+    kind: Schema.Literal("extension-media"),
+    scope: Schema.Literals(["read", "operate"]),
+    extensionId: Schema.String,
+    path: Schema.String,
+    expiresAt: Schema.Number,
+  }),
   Schema.Struct({
     version: Schema.Literal(1),
     kind: Schema.Literal("workspace-file"),
@@ -172,6 +191,12 @@ const decodeAssetClaims = Schema.decodeUnknownOption(AssetClaimsJson);
 const encodeAssetClaims = Schema.encodeSync(AssetClaimsJson);
 
 export type ResolvedAsset =
+  | {
+      readonly kind: "extension-media";
+      readonly extensionId: string;
+      readonly path: string;
+      readonly scope: "read" | "operate";
+    }
   | {
       readonly kind: "file";
       readonly path: string;
@@ -491,6 +516,7 @@ const finalizeWorkspaceFileAsset = Effect.fn("AssetAccess.finalizeWorkspaceFileA
 
 export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (input: {
   readonly resource: AssetResource;
+  readonly scopes?: ReadonlyArray<AuthEnvironmentScope>;
   readonly workspaceRoot?: string;
   readonly projectFaviconPath?: string;
   /** Where a cloned project's checkout stands, while the clone tracker still knows it. */
@@ -506,6 +532,34 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
   let imageDimensions: ImageDimensions | null = null;
 
   switch (input.resource._tag) {
+    case "extension-media": {
+      const host = yield* ExtensionHost.ExtensionHost;
+      const target = yield* host.resolveRoute(
+        "GET",
+        `/ext/${input.resource.extensionId}${input.resource.path}`,
+      );
+      if (!target) return yield* new AssetPreviewTypeValidationError({ resource: input.resource });
+      const required =
+        target.scope === "operate" ? AuthOrchestrationOperateScope : AuthOrchestrationReadScope;
+      if (!input.scopes?.includes(required))
+        return yield* new EnvironmentAuthorizationError({
+          ...authScopeRequiredResponse(required),
+          message: "This connection cannot access the extension route.",
+        });
+      expiresAt =
+        (Math.floor((yield* Clock.currentTimeMillis) / EXTENSION_MEDIA_TOKEN_BUCKET_MS) + 2) *
+        EXTENSION_MEDIA_TOKEN_BUCKET_MS;
+      claims = {
+        version: 1,
+        kind: "extension-media",
+        extensionId: input.resource.extensionId,
+        scope: target.scope,
+        path: input.resource.path,
+        expiresAt,
+      };
+      fileName = "media";
+      break;
+    }
     case "media-file": {
       let requestedPath = expandHomePath(input.resource.path, yield* HostProcess.HomeDirectory);
       if (!path.isAbsolute(requestedPath)) {
@@ -825,6 +879,9 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
   return {
     relativeUrl: `${ASSET_ROUTE_PREFIX}/${token}/${encodeURIComponent(fileName)}`,
     expiresAt,
+    ...(claims.kind === "extension-media"
+      ? { ttlMs: expiresAt - (yield* Clock.currentTimeMillis) }
+      : {}),
     ...(sourcePath !== undefined ? { sourcePath } : {}),
     ...(imageDimensions !== null ? { imageDimensions } : {}),
   };
@@ -847,6 +904,15 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
 
   const claims = decodeClaims(encodedPayload);
   if (!claims || claims.expiresAt <= (yield* Clock.currentTimeMillis)) return null;
+
+  if (claims.kind === "extension-media") {
+    return {
+      kind: "extension-media",
+      extensionId: claims.extensionId,
+      scope: claims.scope,
+      path: claims.path,
+    } satisfies ResolvedAsset;
+  }
 
   if (claims.kind === "attachment") {
     const config = yield* ServerConfig.ServerConfig;
@@ -982,4 +1048,26 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
     relativePath: joinedRelativePath,
   });
   return workspaceFile ? ({ kind: "file", path: workspaceFile } satisfies ResolvedAsset) : null;
+});
+
+export const extensionMediaResponse = Effect.fn("AssetAccess.extensionMediaResponse")(function* (
+  asset: Extract<ResolvedAsset, { kind: "extension-media" }>,
+  request: HttpServerRequest.HttpServerRequest,
+) {
+  const host = yield* ExtensionHost.ExtensionHost;
+  const target = yield* host.resolveRoute("GET", "/ext/" + asset.extensionId + asset.path);
+  const headers = { "x-content-type-options": "nosniff" };
+  if (!target) return HttpServerResponse.empty({ status: 404, headers });
+  if (target.scope === "operate" && asset.scope !== "operate")
+    return HttpServerResponse.empty({ status: 403, headers });
+  const proxy = yield* ExtensionProxy.ExtensionProxy;
+  const response = yield* proxy.forward(request, { ...target, scope: asset.scope });
+  const mimeType = response.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
+  if (
+    mimeType
+      ? !/^image\/[\w!#$&^.+-]+$/.test(mimeType) || mimeType === "image/svg+xml"
+      : response.status !== 304
+  )
+    return HttpServerResponse.empty({ status: 415, headers });
+  return HttpServerResponse.setHeaders(response, headers);
 });

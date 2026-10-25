@@ -1,5 +1,9 @@
 import { ModelSelection } from "@t3tools/contracts";
-import type { LaunchThreadInput, ThreadReadResult } from "@t3tools/extension-sdk/threads";
+import type {
+  LaunchThreadInput,
+  ThreadMedia,
+  ThreadReadResult,
+} from "@t3tools/extension-sdk/threads";
 import type { ExtensionEvent } from "@t3tools/extension-sdk/protocol";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -36,8 +40,14 @@ export class ThreadOperations extends Context.Service<
       id: string,
       input: LaunchThreadInput,
       prepared: PreparedLaunch,
+      extensionId?: string,
     ) => Effect.Effect<void, ExtensionThreadError>;
-    readonly send: (id: string, text: string) => Effect.Effect<void, ExtensionThreadError>;
+    readonly send: (
+      id: string,
+      text: string,
+      media?: ThreadMedia,
+      extensionId?: string,
+    ) => Effect.Effect<void, ExtensionThreadError>;
     readonly read: (
       id: string,
       after?: string,

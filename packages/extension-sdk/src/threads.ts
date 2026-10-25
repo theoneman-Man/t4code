@@ -1,10 +1,24 @@
 import * as Schema from "effect/Schema";
 
+export const ThreadMedia = Schema.Array(
+  Schema.Struct({
+    path: Schema.String.check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(2048),
+      Schema.isPattern(/^\/(?!\/)[^#\\]*$/),
+    ),
+    name: Schema.optional(Schema.String.check(Schema.isMaxLength(255))),
+    mimeType: Schema.optional(Schema.String.check(Schema.isMaxLength(100))),
+  }),
+).check(Schema.isMaxLength(24));
+export type ThreadMedia = typeof ThreadMedia.Type;
+
 const text = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100_000));
 export const LaunchThreadInput = Schema.Struct({
   projectId: Schema.optional(text),
   title: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
   prompt: text,
+  media: Schema.optional(ThreadMedia),
   instructions: Schema.optional(text),
   idempotencyKey: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
 });
@@ -19,12 +33,14 @@ export const ThreadReadResult = Schema.Struct({
       role: Schema.Literals(["user", "assistant", "system"]),
       text: Schema.String,
       streaming: Schema.Boolean,
+      media: Schema.optional(ThreadMedia),
+      extensionId: Schema.optional(Schema.String),
     }),
   ),
   after: Schema.NullOr(Schema.String),
 });
 export type ThreadReadResult = typeof ThreadReadResult.Type;
-export const SendThreadInput = Schema.Struct({ text });
+export const SendThreadInput = Schema.Struct({ text, media: Schema.optional(ThreadMedia) });
 export const THREADS_PATH = "/.t4/threads";
 const decodeLaunch = Schema.decodeSync(LaunchThreadInput);
 const decodeReceipt = Schema.decodeUnknownSync(ThreadReceipt);
@@ -51,10 +67,10 @@ export function createThreadClient(fetch: (path: string, init?: RequestInit) => 
       const validated = decodeLaunch(input);
       return decodeReceipt(await (await request(THREADS_PATH, validated)).json()).threadId;
     },
-    async sendToThread(threadId: string, text: string): Promise<void> {
+    async sendToThread(threadId: string, text: string, media?: ThreadMedia): Promise<void> {
       await request(
         `${THREADS_PATH}/${encodeURIComponent(threadId)}/messages`,
-        decodeSend({ text }),
+        decodeSend({ text, ...(media === undefined ? {} : { media }) }),
       );
     },
     async readThread(

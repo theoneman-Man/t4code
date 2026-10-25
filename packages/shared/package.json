@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./extensionMedia": {
+      "types": "./src/extensionMedia.ts",
+      "import": "./src/extensionMedia.ts"
+    },
     "./changedFileKind": {
       "types": "./src/changedFileKind.ts",
       "import": "./src/changedFileKind.ts"

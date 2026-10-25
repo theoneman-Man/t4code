@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+import { useExtensionRuntime } from "./context";
 import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 import { render, act, stubGlobal } from "../../test/render";
@@ -23,11 +25,14 @@ vi.mock("virtual:t4-extensions", async () => ({
   ],
 }));
 vi.mock("./hostContext", () => ({ useHostExtContext: () => ({ environmentId: "test-env" }) }));
-vi.mock("./http", () => ({
-  extensionPath: (id: string, path: string) => `/ext/${id}${path}`,
-  fetchEnvironmentPath: (_environmentId: string, path: string, init?: RequestInit) =>
-    globalThis.fetch(path, init),
-}));
+vi.mock("./http", async (importOriginal) => {
+  const { extensionPath } = await importOriginal<typeof import("./http")>();
+  return {
+    extensionPath,
+    fetchEnvironmentPath: (_environmentId: string, path: string, init?: RequestInit) =>
+      globalThis.fetch(path, init),
+  };
+});
 
 async function selectWorkspace(name: string) {
   const trigger = page.getByRole("button", { name: "Switch workspace" });
@@ -274,4 +279,50 @@ it("refreshes backend status when the shared event stream reconnects", async () 
   await act(() => retry());
   await expect.element(screen.getByText("Extension restarting.", { exact: true })).toBeVisible();
   expect(statusReads).toBe(2);
+});
+
+it("keeps runtime fetch identity across host rerenders", async () => {
+  const seen: ReturnType<typeof useExtFetch>[] = [];
+  const contexts: ReturnType<typeof useExtensionRuntime>[] = [];
+  function View() {
+    seen.push(useExtFetch());
+    contexts.push(useExtensionRuntime());
+    return <p>Stable fetch</p>;
+  }
+  const entry = { ...extensionSlots[0]!, slot: { ...extensionSlots[0]!.slot, component: View } };
+  const context = { environmentId: "test-env" };
+  const status = { id: "sample", backend: "none" as const };
+  await using screen = await render(
+    <SlotHost entry={entry} context={context} status={status} active />,
+  );
+  await screen.rerender(
+    <SlotHost entry={entry} context={context} status={status} active={false} />,
+  );
+  expect(seen.length).toBeGreaterThan(1);
+  expect(new Set(seen).size).toBe(1);
+  expect(new Set(contexts).size).toBe(1);
+});
+
+it("rejects fetch anchors before invoking a supplied extension transport", async () => {
+  const supplied = vi.fn(async () => new Response("unexpected"));
+  let fetch: ReturnType<typeof useExtFetch> | undefined;
+  function Probe() {
+    const extensionFetch = useExtFetch();
+    useEffect(() => {
+      fetch = extensionFetch;
+    }, [extensionFetch]);
+    return <span>Fetch probe</span>;
+  }
+  await using screen = await render(
+    <SlotHost
+      entry={{ ...extensionSlots[0]!, slot: { ...extensionSlots[0]!.slot, component: Probe } }}
+      context={{ environmentId: "env" }}
+      active
+      fetch={supplied}
+      status={{ id: "sample", backend: "ready" }}
+    />,
+  );
+  await expect.element(screen.getByText("Fetch probe")).toBeVisible();
+  await expect(fetch!("#review-image")).rejects.toThrow();
+  expect(supplied).not.toHaveBeenCalled();
 });

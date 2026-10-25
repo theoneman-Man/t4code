@@ -21,8 +21,9 @@ discarded when persisted tabs rehydrate.
 `useExtFetch()` accepts a backend path starting with `/`. The host adds `/ext/<extension id>`
 and sends the request through the selected environment's authenticated HTTP machinery, including
 cookie credentials, bearer credentials, relay renewal and DPoP proofs. Credentials stay inside
-the host adapter. `useExtMediaUrl(path)` fetches media through that adapter and returns a blob
-URL, which is revoked when the path changes or the view unmounts.
+the host adapter. `useExtMediaUrl(path)` returns a shared signed media URL, refreshed before expiry. Use it with
+`<img loading="lazy">` so the browser can cache and defer the download. If URL issuance fails,
+the hook falls back to an authenticated blob download. Signed URLs serve images only; SVG and non-image responses are refused.
 
 `useExtEvents(topic, callback)` shares one authenticated streaming-fetch connection per extension
 and environment. Events have `{ topic, cursor, data }`. Every subscriber receives `reset`, even
@@ -98,13 +99,16 @@ Add `"permissions": ["threads"]` to the manifest to enable the reserved host rou
 Backends use their current `T4_EXT_TOKEN` bearer, which grants access only to their extension's
 owned threads. This bearer does not grant arbitrary RPC or access to other threads.
 
-`useExtThreads()` returns `launchThread({ projectId?, title, prompt, instructions?, idempotencyKey })`,
-`sendToThread(threadId, text)`, `readThread(threadId, { after? })`,
+`useExtThreads()` returns `launchThread({ projectId?, title, prompt, instructions?, idempotencyKey, media? })`,
+`sendToThread(threadId, text, media?)`, `readThread(threadId, { after? })`,
 `subscribeThread(threadId, onEvent)` and `openThread(threadId)`.
 Launch returns a thread ID. Reusing a key with the same input returns the same thread;
 changing its input returns 409. Receipts survive host restarts. Omitting `projectId` uses the
 host's scratch project. The project's effective default model must be configured. Launches
 require approvals. Optional instructions precede the prompt in the initial message.
+`media` accepts up to 24 `{ path, name?, mimeType? }` references to absolute extension backend
+GET paths, including version queries. The timeline loads thumbnails and opens the original on
+click. Media stays on the backend; the host stores references and returns them in `messages[].media` with their owning `messages[].extensionId`.
 
 Read returns at most 100 conversation items, the orchestration status or `archived`,
 and an opaque `after` cursor for the next page. A subscription uses the existing SDK event

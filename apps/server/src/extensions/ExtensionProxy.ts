@@ -113,6 +113,7 @@ const make = Effect.gen(function* () {
         Effect.mapError((cause) => new ExtensionProxyError({ cause })),
       );
     const headers = responseHeaders(response.headers);
+    if (response.status === 304) return HttpServerResponse.empty({ status: 304, headers });
     const stream = response.stream.pipe(
       Stream.tapError((error) =>
         Effect.logWarning("Extension proxy response stream failed.", {

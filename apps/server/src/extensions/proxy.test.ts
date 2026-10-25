@@ -82,3 +82,40 @@ it("replaces credentials and strips hop headers in both directions", () => {
     "cache-control": "no-store, no-transform",
   });
 });
+
+it("preserves caching metadata and unencoded lengths", () => {
+  const headers = {
+    "cache-control": "private, max-age=31536000, immutable",
+    etag: '"image-v1"',
+    "last-modified": "Sun, 25 Oct 2026 08:00:00 GMT",
+    expires: "Mon, 25 Oct 2027 08:00:00 GMT",
+    vary: "Accept",
+    "content-length": "512",
+  };
+  expect(responseHeaders(headers)).toEqual(headers);
+  expect(responseHeaders({ ...headers, "content-encoding": "gzip" })).toEqual(
+    Object.fromEntries(Object.entries(headers).filter(([name]) => name !== "content-length")),
+  );
+  expect(
+    requestHeaders(
+      { "if-none-match": headers.etag, "if-modified-since": headers["last-modified"] },
+      "token",
+      "read",
+    ),
+  ).toMatchObject({
+    "if-none-match": headers.etag,
+    "if-modified-since": headers["last-modified"],
+  });
+});
+
+it("keeps authenticated responses private and removes shared-cache lifetimes", () => {
+  expect(
+    responseHeaders({ "cache-control": "public, max-age=42, s-maxage=900, no-transform" })[
+      "cache-control"
+    ],
+  ).toBe("private, max-age=42, no-transform");
+  expect(
+    responseHeaders({ "cache-control": "PUBLIC, S-MAXAGE = 90, immutable" })["cache-control"],
+  ).toBe("private, immutable");
+  expect(responseHeaders({})["cache-control"]).toBe("no-store, no-transform");
+});

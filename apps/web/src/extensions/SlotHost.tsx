@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import type { ExtContext } from "@t3tools/extension-sdk";
 import type { ExtensionStatusResponse, ExtensionStatus } from "@t3tools/extension-sdk";
 import { RenderErrorBoundary } from "../components/RenderErrorBoundary";
@@ -24,13 +24,23 @@ export function SlotHost({
   status?: ExtensionStatus;
 }) {
   const statusKey = `${context.environmentId}:${entry.extensionId}`;
-  const fetch: ExtFetch = async (path, init) => {
-    const response = await (suppliedFetch
-      ? suppliedFetch(path, init)
-      : fetchEnvironmentPath(context.environmentId, extensionPath(entry.extensionId, path), init));
-    if (response.status === 503) refreshExtensionStatus(statusKey);
-    return response;
-  };
+  // eslint-disable-next-line t3code/no-manual-memo -- Extension hooks depend on stable fetch identity across host renders.
+  const fetch = useCallback<ExtFetch>(
+    async (path, init) => {
+      const backendPath = extensionPath(entry.extensionId, path);
+      const response = await (suppliedFetch
+        ? suppliedFetch(path, init)
+        : fetchEnvironmentPath(context.environmentId, backendPath, init));
+      if (response.status === 503) refreshExtensionStatus(statusKey);
+      return response;
+    },
+    [suppliedFetch, context.environmentId, entry.extensionId, statusKey],
+  );
+  // eslint-disable-next-line t3code/no-manual-memo -- The extension runtime context has an explicit identity contract.
+  const runtime = useMemo(
+    () => ({ extensionId: entry.extensionId, context, fetch }),
+    [entry.extensionId, context, fetch],
+  );
   const [result, setResult] = useState<{ environmentId: string; status: ExtensionStatus } | null>(
     null,
   );
@@ -79,7 +89,7 @@ export function SlotHost({
       className={cn("flex min-h-0 flex-1 flex-col", extensionRootClass(entry.extensionId))}
       data-extension-id={entry.extensionId}
     >
-      <ExtensionRuntimeContext value={{ extensionId: entry.extensionId, context, fetch }}>
+      <ExtensionRuntimeContext value={runtime}>
         <RenderErrorBoundary
           resetKeys={[entry.key, context.environmentId]}
           fallback={

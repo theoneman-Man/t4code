@@ -223,3 +223,27 @@ describe("OrchestrationMessageContext", () => {
     ).toThrow();
   });
 });
+
+it("roundtrips extension media references through persisted message context", () => {
+  const context = {
+    version: 1 as const,
+    records: [],
+    extensionMedia: {
+      extensionId: "sample",
+      items: [{ path: "/files/gate.png?v=one", name: "Gate", mimeType: "image/png" }],
+    },
+  };
+  const decode = (value: string) => decodeContext(JSON.parse(value));
+  expect(decode(JSON.stringify(context))).toEqual(context);
+  expect(() =>
+    decode(
+      JSON.stringify({
+        ...context,
+        extensionMedia: {
+          ...context.extensionMedia,
+          items: Array.from({ length: 25 }, () => context.extensionMedia.items[0]),
+        },
+      }),
+    ),
+  ).toThrow();
+});

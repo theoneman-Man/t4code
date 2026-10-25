@@ -17,6 +17,7 @@ export declare function useExtContext(): ExtContext;
 export declare function useTheme(): "light" | "dark";
 export declare function useExtFetch(): (path: string, init?: RequestInit) => Promise<Response>;
 export declare function useExtEvents(topic: string, onEvent: (event: ExtensionEvent) => void): void;
+/** Returns a shared signed URL for lazy media loading; falls back to a blob if issuance fails. */
 export declare function useExtMediaUrl(path: string): string | null;
 /** Slot addresses are "<extension id>:<slot id>". Pass "chat" to restore chat. */
 export declare function openWorkspace(id: string): void;

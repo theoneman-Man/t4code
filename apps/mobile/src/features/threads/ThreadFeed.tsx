@@ -1,3 +1,7 @@
+import {
+  extensionMediaThumbnailPath,
+  extensionMediaMimeType,
+} from "@t3tools/shared/extensionMedia";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
@@ -455,6 +459,63 @@ function AssistantForkButton(props: {
           tintColor={props.iconColor}
           type="monochrome"
         />
+      )}
+    </Pressable>
+  );
+}
+
+function ExtensionMediaImage(props: {
+  readonly environmentId: EnvironmentId;
+  readonly extensionId: string;
+  readonly path: string;
+  readonly name: string;
+  readonly mimeType?: string | undefined;
+  readonly onPressPreview: (source: FilePreviewSource) => void;
+}) {
+  const resource = {
+    _tag: "extension-media" as const,
+    extensionId: props.extensionId,
+    path: props.path,
+  };
+  const thumbnail = {
+    ...resource,
+    path: extensionMediaThumbnailPath(props.path),
+  };
+  const uri = useAssetUrl(props.environmentId, thumbnail);
+  const mimeType = props.mimeType ?? extensionMediaMimeType(props.path);
+  const imageStyle = useResolveClassNames("h-32 w-40 rounded-[14px]");
+  return (
+    <Pressable
+      accessibilityRole="imagebutton"
+      accessibilityLabel={"Open " + props.name}
+      onPress={() =>
+        props.onPressPreview({
+          kind: "image",
+          environmentId: props.environmentId,
+          resource,
+          name: props.name,
+          ...(mimeType
+            ? {
+                actionsSource: {
+                  name: props.name,
+                  mimeType,
+                  environmentId: props.environmentId,
+                  resource,
+                },
+              }
+            : {}),
+        })
+      }
+    >
+      {uri ? (
+        <ExpoImage
+          source={assetImageSource(props.environmentId, thumbnail, uri)}
+          cachePolicy="memory-disk"
+          contentFit="cover"
+          style={imageStyle}
+        />
+      ) : (
+        <Text>{props.name}</Text>
       )}
     </Pressable>
   );
@@ -1422,6 +1483,21 @@ function renderFeedEntry(
                 <MessageAttachmentUnknown key={attachment.id} name={attachment.name} />
               ),
             )}
+            {message.context?.extensionMedia?.items.length ? (
+              <View className="flex-row flex-wrap gap-2">
+                {message.context.extensionMedia.items.map((item, index) => (
+                  <ExtensionMediaImage
+                    key={`${index}:${item.path}`}
+                    environmentId={props.environmentId}
+                    extensionId={message.context!.extensionMedia!.extensionId}
+                    path={item.path}
+                    name={item.name ?? "Extension image"}
+                    mimeType={item.mimeType}
+                    onPressPreview={props.onPressPreview}
+                  />
+                ))}
+              </View>
+            ) : null}
             {/* An empty container still takes a gap, which pads every attachment-free bubble. */}
             {visibleAttachments.length > 0 ? (
               <View className={inlineAttachmentIds.size ? "flex-row flex-wrap gap-2" : "gap-2"}>

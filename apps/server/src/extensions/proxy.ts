@@ -114,7 +114,15 @@ export function responseHeaders(
 ): Record<string, string> {
   const result = cleanHeaders(headers, false);
   // Fetch decodes upstream compression; its original length/encoding no longer describe the stream.
+  if (result["content-encoding"]) delete result["content-length"];
   delete result["content-encoding"];
-  delete result["content-length"];
-  return { ...result, "cache-control": "no-store, no-transform" };
+  if (result["cache-control"] !== undefined) {
+    result["cache-control"] = result["cache-control"]
+      .split(",")
+      .map((directive) => directive.trim())
+      .filter((directive) => !/^s-maxage\s*=/i.test(directive))
+      .map((directive) => (/^public$/i.test(directive) ? "private" : directive))
+      .join(", ");
+  }
+  return { "cache-control": "no-store, no-transform", ...result };
 }

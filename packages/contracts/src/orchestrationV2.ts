@@ -3566,7 +3566,11 @@ export const OrchestrationV2RpcSchemas = {
     output: OrchestrationV2SearchThreadResult,
   },
   dispatchCommand: {
-    input: OrchestrationV2Command,
+    input: OrchestrationV2Command.check(
+      Schema.makeFilter(
+        (command) => !("context" in command) || command.context?.extensionMedia === undefined,
+      ),
+    ),
     output: OrchestrationV2DispatchCommandResult,
   },
   getTurnDiff: {
@@ -3598,7 +3602,9 @@ export const OrchestrationV2RpcSchemas = {
     output: OrchestrationV2GetTurnItemResult,
   },
   launchThread: {
-    input: OrchestrationV2ThreadLaunchInput,
+    input: OrchestrationV2ThreadLaunchInput.check(
+      Schema.makeFilter((input) => input.initialMessage?.context?.extensionMedia === undefined),
+    ),
     output: OrchestrationV2ThreadLaunchResult,
   },
   subscribeArchivedShell: {
