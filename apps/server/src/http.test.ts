@@ -133,6 +133,7 @@ describe("browser API CORS", () => {
       expect(allowedHeaders.has(ORCHESTRATION_PROTOCOL_HEADER)).toBe(true);
       expect(allowedHeaders.has("authorization")).toBe(true);
       expect(allowedHeaders.has("dpop")).toBe(true);
+      expect(allowedHeaders.has("idempotency-key")).toBe(true);
     } finally {
       await dispose();
     }
