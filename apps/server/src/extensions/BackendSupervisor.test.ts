@@ -8,13 +8,18 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as TestClock from "effect/testing/TestClock";
-import { READY_STABILITY_MS, supervise } from "@t3tools/extension-sdk/host";
+import {
+  READY_STABILITY_MS,
+  supervise,
+  restartDelay,
+  createRestartSignal,
+} from "@t3tools/extension-sdk/host";
 
 vi.mock("node:child_process", { spy: true });
 
 const harness = Effect.fn("SupervisorTest.harness")(function* (ready = true) {
   const launches = yield* Queue.unbounded<Deferred.Deferred<void>>();
-  const states = yield* Queue.unbounded<"restarting" | "failed">();
+  const states = yield* Queue.unbounded<"restarting" | "down">();
   let launchCount = 0;
   const fiber = yield* supervise(
     (onReady) =>
@@ -41,7 +46,7 @@ const harness = Effect.fn("SupervisorTest.harness")(function* (ready = true) {
   };
 });
 
-it.effect.each([true, false])("stops after five consecutive restarts, ready=%s", (ready) =>
+it.effect.each([true, false])("continues after five consecutive restarts, ready=%s", (ready) =>
   Effect.gen(function* () {
     const test = yield* harness(ready);
     for (const delay of [250, 500, 1000, 2000, 4000]) {
@@ -55,9 +60,13 @@ it.effect.each([true, false])("stops after five consecutive restarts, ready=%s",
       }
       yield* TestClock.adjust(delay);
     }
-    expect(yield* test.crash).toBe("failed");
-    yield* Fiber.join(test.fiber);
-    expect(test.count()).toBe(6);
+    expect(yield* test.crash).toBe("down");
+    yield* TestClock.adjust(8_000);
+    const exit = yield* Queue.take(test.launches);
+    yield* Deferred.succeed(exit, undefined);
+    yield* TestClock.adjust(16_000);
+    yield* Queue.take(test.launches);
+    expect(test.count()).toBe(8);
   }),
 );
 
@@ -71,8 +80,7 @@ it.effect("does not recover just before the ready stability window", () =>
     const exit = yield* Queue.take(test.launches);
     yield* TestClock.adjust(READY_STABILITY_MS - 1);
     yield* Deferred.succeed(exit, undefined);
-    expect(yield* Queue.take(test.states)).toBe("failed");
-    yield* Fiber.join(test.fiber);
+    expect(yield* Queue.take(test.states)).toBe("down");
     expect(test.count()).toBe(6);
   }),
 );
@@ -96,9 +104,52 @@ it.effect("recovers the restart budget and initial backoff after a stable ready 
       expect(yield* test.crash).toBe("restarting");
       yield* TestClock.adjust(delay);
     }
-    expect(yield* test.crash).toBe("failed");
-    yield* Fiber.join(test.fiber);
+    expect(yield* test.crash).toBe("down");
     expect(test.count()).toBe(11);
+  }),
+);
+
+it.effect("keeps retrying while down and caps the delay at thirty seconds", () =>
+  Effect.gen(function* () {
+    let attempts = 0;
+    const states: string[] = [];
+    const reached = yield* Deferred.make<void>();
+    yield* supervise(
+      () =>
+        Effect.sync(() => {
+          attempts++;
+        }),
+      (state) =>
+        Effect.sync(() => {
+          states.push(state);
+        }),
+      {
+        onAttempt: (attempt) =>
+          attempt === 12 ? Deferred.succeed(reached, undefined).pipe(Effect.asVoid) : Effect.void,
+      },
+    ).pipe(Effect.forkScoped);
+    yield* TestClock.adjust(300_000);
+    yield* Deferred.await(reached);
+    expect(attempts).toBeGreaterThan(12);
+    expect(
+      states.filter((state, index) => state === "down" && states[index - 1] !== "down"),
+    ).toHaveLength(1);
+    expect([7, 8, 1000].map(restartDelay)).toEqual([30_000, 30_000, 30_000]);
+  }),
+);
+
+it.effect("manual restart interrupts backoff", () =>
+  Effect.gen(function* () {
+    const restart = createRestartSignal();
+    const attempts = yield* Queue.unbounded<void>();
+    yield* supervise(
+      () => Queue.offer(attempts, undefined).pipe(Effect.asVoid),
+      () => Effect.void,
+      { restart: restart.wait },
+    ).pipe(Effect.forkScoped);
+    yield* Queue.take(attempts);
+    restart.request();
+    yield* Queue.take(attempts);
   }),
 );
 

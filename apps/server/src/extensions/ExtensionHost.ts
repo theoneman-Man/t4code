@@ -10,11 +10,16 @@ import type {
   ExtensionBackendState,
   ExtensionStatus,
   ExtensionStatusResponse,
+  ExtensionBackendLifecycle,
 } from "@t3tools/extension-sdk/protocol";
 import * as Context from "effect/Context";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+import * as Schedule from "effect/Schedule";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ServerConfig from "../config.ts";
 import { routeScope } from "./proxy.ts";
@@ -52,6 +57,10 @@ export class ExtensionHost extends Context.Service<
       rawUrl: string,
     ) => Effect.Effect<ReturnType<typeof routeScope>>;
     readonly backend: (id: string) => Effect.Effect<ReadyBackendDescriptor | undefined>;
+    readonly lifecycle: (id: string) => Effect.Effect<ExtensionBackendLifecycle | undefined>;
+    readonly restart: (
+      id: string,
+    ) => Effect.Effect<ExtensionBackendLifecycle | undefined, ExtensionHostError>;
     readonly awaitState: (
       id: string,
       state: ExtensionBackendState,
@@ -83,6 +92,8 @@ const loadFailureReason = (cause: unknown) => {
 };
 const make = Effect.fn("ExtensionHost.make")(function* (options: HostOptions) {
   const config = yield* ServerConfig.ServerConfig;
+  const clock = yield* Clock.Clock;
+  const client = yield* HttpClient.HttpClient;
   const callbackHost =
     config.host === undefined || config.host === "0.0.0.0"
       ? "127.0.0.1"
@@ -121,9 +132,13 @@ const make = Effect.fn("ExtensionHost.make")(function* (options: HostOptions) {
         status: {
           id: extension.manifest.id,
           backend: extension.manifest.backend ? "starting" : "none",
+          ...(extension.manifest.backend
+            ? { lifecycle: { state: "starting", since: clock.currentTimeMillisUnsafe() } }
+            : {}),
         } as ExtensionStatus,
         descriptor: undefined as ReadyBackendDescriptor | undefined,
         listeners: new Set<(status: ExtensionStatus) => void>(),
+        restart: BackendSupervisor.createRestartSignal(),
       },
     ]),
   );
@@ -133,73 +148,211 @@ const make = Effect.fn("ExtensionHost.make")(function* (options: HostOptions) {
       backend: ExtensionBackendState,
       descriptor?: ReadyBackendDescriptor,
       message?: string,
+      lifecycle?: ExtensionBackendLifecycle,
     ) =>
       Effect.sync(() => {
         const entry = entries.get(id)!;
-        entry.status = { id, backend, ...(message ? { message } : {}) };
+        const state = backend === "failed" || backend === "stopped" ? "down" : backend;
+        const previous = entry.status.lifecycle;
+        const lastError =
+          message &&
+          (((state === "down" || state === "restarting") && message !== "Restart requested.") ||
+            message.startsWith("reload failed:"))
+            ? message
+            : state === "ready"
+              ? undefined
+              : previous?.lastError;
+        entry.status = {
+          id,
+          backend,
+          ...(message ? { message } : {}),
+          lifecycle: lifecycle ?? {
+            state,
+            since: previous?.state === state ? previous.since : clock.currentTimeMillisUnsafe(),
+            ...(message ? { reason: message } : {}),
+            ...(lastError ? { lastError } : {}),
+            attempt: previous?.attempt ?? 0,
+          },
+        };
         entry.descriptor = descriptor;
         for (const listener of entry.listeners) listener(entry.status);
       }),
   );
 
+  const control = config.extensionHost?.control;
+  const loopbackOrigin = (raw: string) => {
+    const url = URL.parse(raw);
+    return url &&
+      url.protocol === "http:" &&
+      url.hostname === "127.0.0.1" &&
+      !url.username &&
+      !url.password &&
+      url.pathname === "/" &&
+      !url.search &&
+      !url.hash
+      ? url.origin
+      : undefined;
+  };
+  const controlOrigin = control && loopbackOrigin(control.url);
+  const ownerSnapshotSchema = Schema.Struct({
+    id: Schema.String,
+    lifecycle: Schema.Struct({
+      state: Schema.Literals(["starting", "ready", "reloading", "restarting", "down"]),
+      reason: Schema.optionalKey(Schema.String),
+      lastError: Schema.optionalKey(Schema.String),
+      since: Schema.Number,
+      attempt: Schema.optionalKey(Schema.Number),
+    }),
+    descriptor: Schema.optionalKey(
+      Schema.Struct({
+        extensionId: Schema.String,
+        url: Schema.String,
+        token: Schema.String,
+        instanceId: Schema.String,
+        dataDir: Schema.String,
+      }),
+    ),
+  });
+  if (control && controlOrigin) {
+    yield* Effect.scoped(
+      HttpClient.withScope(client)
+        .get(`${controlOrigin}/states`, {
+          headers: { authorization: `Bearer ${control.token}` },
+        })
+        .pipe(
+          Effect.flatMap(HttpClientResponse.filterStatusOk),
+          Effect.flatMap((response) =>
+            response.stream.pipe(
+              Stream.decodeText(),
+              Stream.splitLines,
+              Stream.filter((line) => line.length > 0),
+              Stream.runForEach((line) =>
+                Schema.decodeUnknownEffect(Schema.fromJsonString(ownerSnapshotSchema))(line).pipe(
+                  Effect.flatMap((snapshot) => {
+                    const entry = entries.get(snapshot.id);
+                    if (!entry?.extension.manifest.backend) return Effect.void;
+                    const descriptor = snapshot.descriptor;
+                    if (
+                      descriptor &&
+                      (descriptor.extensionId !== snapshot.id || !loopbackOrigin(descriptor.url))
+                    )
+                      return Effect.void;
+                    return setState(
+                      snapshot.id,
+                      snapshot.lifecycle.state,
+                      snapshot.lifecycle.state === "ready" ? descriptor : undefined,
+                      snapshot.lifecycle.reason,
+                      snapshot.lifecycle,
+                    );
+                  }),
+                ),
+              ),
+            ),
+          ),
+          Effect.andThen(
+            Effect.fail(new ExtensionHostError({ stage: "identity", cause: "Owner stream ended" })),
+          ),
+          Effect.tapError(() =>
+            Effect.forEach(
+              [...entries.values()].filter((entry) => entry.extension.manifest.backend),
+              (entry) =>
+                setState(
+                  entry.extension.manifest.id,
+                  "down",
+                  undefined,
+                  "Desktop backend owner disconnected.",
+                ),
+              { discard: true },
+            ),
+          ),
+        ),
+    ).pipe(Effect.retry({ schedule: Schedule.spaced("1 second") }), Effect.forkScoped);
+  }
+
   for (const extension of extensions) {
     if (!extension.manifest.backend) continue;
     const id = extension.manifest.id;
     const borrowed = descriptors?.find((descriptor) => descriptor.extensionId === id);
-    const supervise = borrowed
-      ? Effect.gen(function* () {
-          const url = URL.parse(borrowed.url);
-          if (
-            !url ||
-            url.protocol !== "http:" ||
-            url.hostname !== "127.0.0.1" ||
-            url.username ||
-            url.password ||
-            url.pathname !== "/" ||
-            url.search ||
-            url.hash
-          ) {
-            return yield* setState(id, "failed", undefined, "Invalid backend descriptor.");
-          }
-          const descriptor = { ...borrowed, url: url.origin };
-          // Desktop preserves this authenticated endpoint across launches; refresh only the instance identity.
-          yield* BackendSupervisor.probe(descriptor, true).pipe(
-            Effect.matchEffect({
-              onSuccess: (current) => setState(id, "ready", current),
-              onFailure: () => setState(id, "failed", undefined, "Backend readiness failed."),
-            }),
-          );
-          return yield* Effect.never;
-        })
-      : descriptors !== undefined
-        ? setState(
-            id,
-            "failed",
-            undefined,
-            config.extensionHost?.failures?.find((failure) => failure.extensionId === id)
-              ?.message ?? "Desktop backend unavailable.",
-          )
-        : BackendSupervisor.supervise(
-            (ready) =>
-              BackendSupervisor.launch(
-                extension,
-                ready,
-                {
-                  // Bundled servers never watch, even if a dev URL was supplied externally.
-                  development:
-                    config.devUrl !== undefined &&
-                    import.meta.url.endsWith("/src/extensions/ExtensionHost.ts"),
-                  onReload: () => setState(id, "restarting", undefined, "Backend sources changed."),
-                  platform,
-                  stateDir: config.stateDir,
-                  logsDir: config.logsDir,
-                  environment: inherited,
-                  executable,
-                },
-                (descriptor) => setState(id, "ready", descriptor),
-              ),
-            (state, message) => setState(id, state, undefined, message),
-          );
+    const supervise = controlOrigin
+      ? Effect.never
+      : borrowed
+        ? Effect.gen(function* () {
+            const url = URL.parse(borrowed.url);
+            if (
+              !url ||
+              url.protocol !== "http:" ||
+              url.hostname !== "127.0.0.1" ||
+              url.username ||
+              url.password ||
+              url.pathname !== "/" ||
+              url.search ||
+              url.hash
+            ) {
+              return yield* setState(id, "failed", undefined, "Invalid backend descriptor.");
+            }
+            const descriptor = { ...borrowed, url: url.origin };
+            // Desktop preserves this authenticated endpoint across launches; refresh only the instance identity.
+            yield* BackendSupervisor.probe(descriptor, true).pipe(
+              Effect.timeout(2_000),
+              Effect.matchEffect({
+                onSuccess: (current) => setState(id, "ready", current),
+                onFailure: () => setState(id, "failed", undefined, "Backend readiness failed."),
+              }),
+              Effect.repeat({ schedule: Schedule.spaced("1 second") }),
+            );
+          })
+        : descriptors !== undefined
+          ? setState(
+              id,
+              "failed",
+              undefined,
+              config.extensionHost?.failures?.find((failure) => failure.extensionId === id)
+                ?.message ?? "Desktop backend unavailable.",
+            )
+          : BackendSupervisor.supervise(
+              (ready) =>
+                BackendSupervisor.launch(
+                  extension,
+                  ready,
+                  {
+                    // Bundled servers never watch, even if a dev URL was supplied externally.
+                    development:
+                      config.devUrl !== undefined &&
+                      import.meta.url.endsWith("/src/extensions/ExtensionHost.ts"),
+                    onReload: () =>
+                      setState(id, "reloading", undefined, "Backend sources changed."),
+                    onReloadFailed: (message) =>
+                      Effect.flatMap(
+                        Effect.sync(() => entries.get(id)?.descriptor),
+                        (descriptor) => setState(id, "ready", descriptor, message),
+                      ),
+                    platform,
+                    stateDir: config.stateDir,
+                    logsDir: config.logsDir,
+                    environment: inherited,
+                    executable,
+                  },
+                  (descriptor) => setState(id, "ready", descriptor),
+                ),
+              (state, message) => setState(id, state, undefined, message),
+              {
+                restart: entries.get(id)!.restart.wait,
+                onAttempt: (attempt) =>
+                  Effect.sync(() => {
+                    const entry = entries.get(id)!;
+                    entry.status = {
+                      ...entry.status,
+                      lifecycle: {
+                        ...(entry.status.lifecycle ?? {
+                          state: "starting",
+                          since: clock.currentTimeMillisUnsafe(),
+                        }),
+                        attempt,
+                      },
+                    };
+                  }),
+              },
+            );
     yield* Effect.addFinalizer(() => setState(id, "stopped"));
     yield* supervise.pipe(Effect.forkScoped);
   }
@@ -218,6 +371,44 @@ const make = Effect.fn("ExtensionHost.make")(function* (options: HostOptions) {
     backend: Effect.fn("ExtensionHost.backend")((id) =>
       Effect.sync(() => entries.get(id)?.descriptor),
     ),
+    lifecycle: Effect.fn("ExtensionHost.lifecycle")((id) =>
+      Effect.sync(() => {
+        const entry = entries.get(id);
+        return entry?.extension.manifest.backend
+          ? (entry.status.lifecycle ?? {
+              state: "starting" as const,
+              since: clock.currentTimeMillisUnsafe(),
+            })
+          : undefined;
+      }),
+    ),
+    restart: Effect.fn("ExtensionHost.restart")(function* (id) {
+      const entry = entries.get(id);
+      if (!entry?.extension.manifest.backend) return undefined;
+      yield* setState(id, "restarting", undefined, "Restart requested.");
+      if (control && controlOrigin) {
+        yield* Effect.scoped(
+          HttpClient.withScope(client)
+            .post(`${controlOrigin}/restart/${id}`, {
+              headers: { authorization: `Bearer ${control.token}` },
+            })
+            .pipe(
+              Effect.flatMap(HttpClientResponse.filterStatusOk),
+              Effect.timeout(5_000),
+              Effect.mapError((cause) => new ExtensionHostError({ stage: "launch", cause })),
+              Effect.tapError(() =>
+                setState(id, "down", undefined, "Could not reach the desktop backend owner."),
+              ),
+            ),
+        );
+      } else if (descriptors !== undefined) {
+        return yield* new ExtensionHostError({
+          stage: "launch",
+          cause: "Desktop owner control unavailable",
+        });
+      } else entry.restart.request();
+      return entry.status.lifecycle;
+    }),
     awaitState: Effect.fn("ExtensionHost.awaitState")((id, state) =>
       Effect.callback<ExtensionStatus>((resume) => {
         const entry = entries.get(id);

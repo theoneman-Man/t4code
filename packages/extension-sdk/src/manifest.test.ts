@@ -23,6 +23,24 @@ const manifest = {
 };
 
 describe("parseExtensionManifest", () => {
+  it("accepts watchIgnore globs, directories and an empty array", () => {
+    for (const watchIgnore of [[], ["**/*.md", "library", "**/*.test.ts"]])
+      expect(
+        parseExtensionManifest({ ...manifest, backend: { ...manifest.backend, watchIgnore } })
+          .backend?.watchIgnore,
+      ).toEqual(watchIgnore);
+  });
+  it.each([["../outside"], ["/absolute"], ["C:/absolute"], ["bad\\path"], ["!source"], [""]])(
+    "rejects invalid watchIgnore: %j",
+    (pattern) => {
+      expect(() =>
+        parseExtensionManifest({
+          ...manifest,
+          backend: { ...manifest.backend, watchIgnore: [pattern] },
+        }),
+      ).toThrow(/backend.watchIgnore/);
+    },
+  );
   it("accepts optional development watch directories and globs without an SDK bump", () => {
     const watch = ["./runtime", "shared/**/*.ts"];
     expect(

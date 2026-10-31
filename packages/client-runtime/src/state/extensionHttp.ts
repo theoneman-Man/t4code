@@ -40,7 +40,7 @@ export const fetchEnvironmentExtensionHttp = Effect.fn(
       requestUrl = extensionHttpUrl(baseUrl, path);
       return requestUrl;
     },
-    timeoutMs: 30_000,
+    timeoutMs: path.startsWith("/ext/") ? 60_000 : 30_000,
     request: Effect.fn("clientRuntime.state.extensionHttp.request")(function* ({
       headers,
     }: {

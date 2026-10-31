@@ -10,11 +10,115 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Stream from "effect/Stream";
-import { FetchHttpClient, HttpClient, HttpClientError, HttpServerRequest } from "effect/http";
+import * as TestClock from "effect/testing/TestClock";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientError,
+  HttpClientResponse,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "effect/http";
+import type { ExtensionBackendLifecycle } from "@t3tools/extension-sdk/protocol";
 import * as ExtensionHost from "./ExtensionHost.ts";
 import * as ExtensionProxy from "./ExtensionProxy.ts";
 
 const target = { id: "sample", path: "/file", search: "?key=query-secret", scope: "read" as const };
+
+const holdingHarness = Effect.fn("ExtensionProxyTest.holdingHarness")(function* () {
+  let lifecycle: ExtensionBackendLifecycle = { state: "reloading", since: 0 };
+  const waiting = yield* Deferred.make<void>();
+  const ready = yield* Deferred.make<void>();
+  const forwarded: string[] = [];
+  const host = ExtensionHost.ExtensionHost.of({
+    threadHostUrl: "http://127.0.0.1:1234",
+    hasThreadPermission: () => Effect.succeed(false),
+    status: Effect.succeed({ extensions: [] }),
+    resolveRoute: () => Effect.succeed(target),
+    lifecycle: () => Effect.sync(() => lifecycle),
+    restart: () => Effect.succeed(undefined),
+    backend: () =>
+      Effect.succeed({
+        extensionId: "sample",
+        url: "http://127.0.0.1:12345",
+        token: "fixture",
+        instanceId: "one",
+        dataDir: "unused",
+      }),
+    awaitState: () =>
+      Deferred.succeed(waiting, undefined).pipe(
+        Effect.andThen(Deferred.await(ready)),
+        Effect.as({ id: "sample", backend: "ready" as const }),
+      ),
+  });
+  const client = HttpClient.make((request) => {
+    forwarded.push(request.method);
+    return Effect.succeed(HttpClientResponse.fromWeb(request, new Response("ok")));
+  });
+  const services = yield* Layer.build(
+    ExtensionProxy.layer.pipe(
+      Layer.provide(Layer.succeed(ExtensionHost.ExtensionHost, host)),
+      Layer.provide(Layer.succeed(HttpClient.HttpClient, client)),
+    ),
+  );
+  return {
+    proxy: Context.get(services, ExtensionProxy.ExtensionProxy),
+    waiting,
+    forwarded,
+    ready: Effect.sync(() => {
+      lifecycle = { state: "ready", since: 1 };
+    }).pipe(Effect.andThen(Deferred.succeed(ready, undefined))),
+  };
+});
+
+it.effect.each([
+  { method: "GET", key: "" },
+  { method: "HEAD", key: "" },
+  { method: "POST", key: "Idempotency-Key" },
+  { method: "POST", key: "x-request-id" },
+])("holds $method until ready, with $key for writes", ({ method, key }) =>
+  Effect.gen(function* () {
+    const test = yield* holdingHarness();
+    const request = HttpServerRequest.fromWeb(
+      new Request("http://host/ext/sample/file", {
+        method,
+        ...(method === "POST" ? { headers: { [key]: "operation-1" }, body: "payload" } : {}),
+      }),
+    );
+    const pending = yield* test.proxy.forward(request, target).pipe(Effect.forkScoped);
+    yield* Deferred.await(test.waiting);
+    expect(test.forwarded).toEqual([]);
+    yield* test.ready;
+    expect((yield* Fiber.join(pending)).status).toBe(200);
+    expect(test.forwarded).toEqual([method]);
+  }),
+);
+
+it.effect("stops holding after twenty seconds without forwarding", () =>
+  Effect.gen(function* () {
+    const test = yield* holdingHarness();
+    const pending = yield* test.proxy.forward(incoming("GET"), target).pipe(Effect.forkScoped);
+    yield* Deferred.await(test.waiting);
+    yield* TestClock.adjust(20_000);
+    expect((yield* Fiber.join(pending)).status).toBe(503);
+    expect(test.forwarded).toEqual([]);
+  }),
+);
+
+it.effect("rejects a POST without a key with lifecycle JSON and retry headers", () =>
+  Effect.gen(function* () {
+    const test = yield* holdingHarness();
+    const response = yield* test.proxy.forward(incoming("POST"), target);
+    expect(response.status).toBe(503);
+    expect(response.headers["retry-after"]).toBe("1");
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(yield* Effect.promise(() => HttpServerResponse.toWeb(response).json())).toEqual({
+      state: "reloading",
+      retryAfterMs: 1000,
+    });
+    expect(test.forwarded).toEqual([]);
+  }),
+);
 const incoming = (method: string) =>
   HttpServerRequest.fromWeb(
     new Request(`http://host/ext/sample/file${target.search}`, {
@@ -64,6 +168,8 @@ const harness = Effect.fn("ExtensionProxyTest.harness")(function* (
           : undefined,
       ),
     status: Effect.succeed({ extensions: [] }),
+    lifecycle: () => Effect.succeed(undefined),
+    restart: () => Effect.succeed(undefined),
     resolveRoute: () => Effect.succeed(target),
     awaitState: () => Effect.succeed({ id: "sample", backend: "ready" }),
   });

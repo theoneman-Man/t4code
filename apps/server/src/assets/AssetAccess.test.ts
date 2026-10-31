@@ -1031,6 +1031,8 @@ it.effect(
       const host = ExtensionHost.ExtensionHost.of({
         threadHostUrl: "http://host",
         status: Effect.succeed({ extensions: [] }),
+        lifecycle: () => Effect.succeed(undefined),
+        restart: () => Effect.succeed(undefined),
         hasThreadPermission: () => Effect.succeed(false),
         awaitState: () => Effect.succeed({ id: "sample", backend: "ready" }),
         backend: () =>

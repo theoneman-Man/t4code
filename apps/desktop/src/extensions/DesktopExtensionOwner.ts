@@ -5,8 +5,12 @@ import { EXTENSION_LIST_FILE } from "@t3tools/extension-sdk/manifest";
 import { loadExtensions, type ResolvedExtension } from "@t3tools/extension-sdk/node";
 import * as BackendSupervisor from "@t3tools/extension-sdk/host";
 import type { ReadyBackendDescriptor, ProcessOptions } from "@t3tools/extension-sdk/host";
-import type { ExtensionBackendState } from "@t3tools/extension-sdk/protocol";
+import type {
+  ExtensionBackendState,
+  ExtensionBackendLifecycle,
+} from "@t3tools/extension-sdk/protocol";
 import * as Context from "effect/Context";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -38,12 +42,15 @@ export class Options extends Context.Reference<{ readonly listFile?: string }>(
 
 export const make = Effect.fn("DesktopExtensionOwner.make")(function* (options: OwnerOptions) {
   const resolveExecutable = yield* SpawnExecutableResolution;
+  const clock = yield* Clock.Clock;
   const mutex = yield* Semaphore.make(1);
   let ownerScope = yield* Scope.make();
   let closed = false;
+  let markStopped = () => {};
   const stop = mutex.withPermits(1)(
     Effect.gen(function* () {
       closed = true;
+      markStopped();
       yield* Scope.close(ownerScope, Exit.void);
     }),
   );
@@ -76,8 +83,52 @@ export const make = Effect.fn("DesktopExtensionOwner.make")(function* (options: 
       descriptor: undefined as ReadyBackendDescriptor | undefined,
       state: "starting" as ExtensionBackendState,
       message: undefined as string | undefined,
+      lifecycle: {
+        state: "starting",
+        since: clock.currentTimeMillisUnsafe(),
+      } as ExtensionBackendLifecycle,
+      restart: BackendSupervisor.createRestartSignal(),
       listeners: new Set<(state: ExtensionBackendState) => void>(),
     }));
+  const snapshot = (entry: (typeof entries)[number]) => ({
+    id: entry.extension.manifest.id,
+    lifecycle: entry.lifecycle,
+    ...(entry.descriptor ? { descriptor: entry.descriptor } : {}),
+  });
+  let publish: (value: ReturnType<typeof snapshot>) => void = () => {};
+  const control = hasList
+    ? yield* BackendSupervisor.makeBackendControl({
+        snapshots: () => entries.map(snapshot),
+        restart: (id) => {
+          const entry = entries.find((item) => item.extension.manifest.id === id);
+          if (!entry || closed) return false;
+          entry.state = "restarting";
+          entry.lifecycle = {
+            ...entry.lifecycle,
+            state: "restarting",
+            reason: "Restart requested.",
+            since: clock.currentTimeMillisUnsafe(),
+          };
+          publish(snapshot(entry));
+          entry.restart.request();
+          return true;
+        },
+      })
+    : undefined;
+  if (control) publish = control.publish;
+  markStopped = () => {
+    for (const entry of entries) {
+      entry.state = "stopped";
+      entry.descriptor = undefined;
+      entry.lifecycle = {
+        state: "down",
+        reason: "Desktop stopped.",
+        since: clock.currentTimeMillisUnsafe(),
+      };
+      publish(snapshot(entry));
+      for (const listener of entry.listeners) listener(entry.state);
+    }
+  };
   let initialized = yield* Deferred.make<void>();
   let started = false;
   let suspended = false;
@@ -91,57 +142,88 @@ export const make = Effect.fn("DesktopExtensionOwner.make")(function* (options: 
       (entry) =>
         Effect.gen(function* () {
           const environment = options.environment ?? process.env;
-          const executable =
-            entry.extension.manifest.backend!.command[0] === "node"
-              ? resolveExecutable(
-                  options.platform === "win32" ? "node.exe" : "node",
-                  options.platform,
-                  environment,
-                )
-              : undefined;
-          if (entry.extension.manifest.backend!.command[0] === "node" && !executable) {
-            entry.state = "failed";
-            entry.message = "Node.js executable not found on the desktop shell PATH.";
-            for (const listener of entry.listeners) listener(entry.state);
-            return Effect.void;
-          }
+          let nodeMissing = false;
+          const missingNode = "Node.js executable not found on the desktop shell PATH.";
           const endpoint = yield* BackendSupervisor.allocateEndpoint();
           const firstAttempt = yield* Deferred.make<void>();
           const setState = (state: ExtensionBackendState, message?: string) =>
             Effect.sync(() => {
               entry.state = state;
               entry.message = message;
+              const current = state === "failed" || state === "stopped" ? "down" : state;
+              const lastError =
+                message &&
+                (((current === "down" || current === "restarting") &&
+                  message !== "Restart requested.") ||
+                  message.startsWith("reload failed:"))
+                  ? message
+                  : current === "ready"
+                    ? undefined
+                    : entry.lifecycle.lastError;
+              entry.lifecycle = {
+                state: current,
+                since:
+                  entry.lifecycle.state === current
+                    ? entry.lifecycle.since
+                    : clock.currentTimeMillisUnsafe(),
+                ...(message ? { reason: message } : {}),
+                ...(lastError ? { lastError } : {}),
+                attempt: entry.lifecycle.attempt ?? 0,
+              };
+              control?.publish(snapshot(entry));
               for (const listener of entry.listeners) listener(state);
             });
           const supervisor = BackendSupervisor.supervise(
             (ready) =>
-              BackendSupervisor.launch(
-                entry.extension,
-                ready,
-                {
-                  ...options,
-                  development: options.development === true && !packaged,
-                  onReload: () => setState("restarting", "Backend sources changed."),
-                  ...(executable ? { executable } : {}),
-                  environment,
-                  onStarting: (descriptor) =>
-                    Effect.sync(() => {
+              Effect.gen(function* () {
+                const executable =
+                  entry.extension.manifest.backend!.command[0] === "node"
+                    ? resolveExecutable(
+                        options.platform === "win32" ? "node.exe" : "node",
+                        options.platform,
+                        environment,
+                      )
+                    : undefined;
+                nodeMissing =
+                  entry.extension.manifest.backend!.command[0] === "node" && !executable;
+                if (nodeMissing) return yield* Effect.fail(missingNode);
+                return yield* BackendSupervisor.launch(
+                  entry.extension,
+                  ready,
+                  {
+                    ...options,
+                    development: options.development === true && !packaged,
+                    onReload: () => setState("reloading", "Backend sources changed."),
+                    onReloadFailed: (message) => setState("ready", message),
+                    ...(executable ? { executable } : {}),
+                    environment,
+                    onStarting: (descriptor) =>
+                      Effect.sync(() => {
+                        entry.descriptor = descriptor;
+                      }),
+                  },
+                  (descriptor) =>
+                    Effect.gen(function* () {
                       entry.descriptor = descriptor;
+                      yield* setState("ready");
+                      yield* Deferred.succeed(firstAttempt, undefined);
                     }),
-                },
-                (descriptor) =>
-                  Effect.gen(function* () {
-                    entry.descriptor = descriptor;
-                    yield* setState("ready");
-                    yield* Deferred.succeed(firstAttempt, undefined);
-                  }),
-                endpoint,
-              ),
+                  endpoint,
+                );
+              }),
             (state, message) =>
-              setState(state, message).pipe(
+              setState(nodeMissing ? "failed" : state, nodeMissing ? missingNode : message).pipe(
                 Effect.andThen(Deferred.succeed(firstAttempt, undefined)),
                 Effect.asVoid,
               ),
+            {
+              restart: entry.restart.wait,
+              onAttempt: (attempt) =>
+                Effect.sync(() => {
+                  entry.lifecycle = { ...entry.lifecycle, attempt };
+                  control?.publish(snapshot(entry));
+                }),
+            },
           ).pipe(Effect.provide(FetchHttpClient.layer));
           yield* supervisor.pipe(Effect.forkIn(ownerScope));
           return Deferred.await(firstAttempt);
@@ -172,6 +254,12 @@ export const make = Effect.fn("DesktopExtensionOwner.make")(function* (options: 
         entry.descriptor = undefined;
         entry.message = undefined;
         entry.state = "stopped";
+        entry.lifecycle = {
+          state: "down",
+          reason: "Desktop suspended.",
+          since: clock.currentTimeMillisUnsafe(),
+        };
+        control?.publish(snapshot(entry));
         for (const listener of entry.listeners) listener(entry.state);
       }
     }),
@@ -194,6 +282,7 @@ export const make = Effect.fn("DesktopExtensionOwner.make")(function* (options: 
       ? {
           extensionHost: {
             listFile,
+            ...(control ? { control: control.descriptor } : {}),
             backends: entries.flatMap((entry) => (entry.descriptor ? [entry.descriptor] : [])),
             ...(entries.some((entry) => entry.state === "failed" && entry.message)
               ? {

@@ -7,4 +7,10 @@ export {
   type ProcessOptions,
   type ReadyBackendDescriptor,
 } from "./process.ts";
-export { supervise, READY_STABILITY_MS } from "./BackendSupervisor.ts";
+export {
+  supervise,
+  createRestartSignal,
+  restartDelay,
+  READY_STABILITY_MS,
+} from "./BackendSupervisor.ts";
+export { makeBackendControl, type BackendOwnerSnapshot } from "./control.ts";

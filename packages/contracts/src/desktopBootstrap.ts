@@ -11,6 +11,7 @@ export const DesktopBackendBootstrap = Schema.Struct({
   extensionHost: Schema.optionalKey(
     Schema.Struct({
       listFile: Schema.optionalKey(Schema.String),
+      control: Schema.optionalKey(Schema.Struct({ url: Schema.String, token: Schema.String })),
       backends: Schema.Array(
         Schema.Struct({
           extensionId: Schema.String,

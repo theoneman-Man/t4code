@@ -3,6 +3,7 @@ import * as NodeFS from "node:fs";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { DesktopBackendBootstrap } from "@t3tools/contracts";
 import type { ReadyBackendDescriptor } from "@t3tools/extension-sdk/host";
+import { makeBackendControl, type BackendOwnerSnapshot } from "@t3tools/extension-sdk/host";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Schema from "effect/Schema";
 import * as NetService from "@t3tools/shared/Net";
@@ -51,6 +52,7 @@ const harness = Effect.fn("ExtensionTest.harness")(function* (
   descriptors?: readonly ReadyBackendDescriptor[],
   dist = false,
   failures?: { extensionId: string; message: string }[],
+  control?: { url: string; token: string },
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -79,7 +81,12 @@ const harness = Effect.fn("ExtensionTest.harness")(function* (
       desktopBootstrapToken: "test-bootstrap-token",
       tailscaleServeEnabled: false,
       tailscaleServePort: 443,
-      extensionHost: { listFile, backends: descriptors, ...(failures ? { failures } : {}) },
+      extensionHost: {
+        listFile,
+        backends: descriptors,
+        ...(failures ? { failures } : {}),
+        ...(control ? { control } : {}),
+      },
     };
     const encoded = yield* encodeBootstrap(envelope);
     yield* fs.writeFileString(envelopePath, encoded + "\n");
@@ -222,7 +229,9 @@ it.live("starts, authorizes, streams ticks, restarts and stops the real backend"
         const again = yield* client.get("/ext/sample/hello", { headers: read });
         expect(yield* again.json).toEqual({ message: "hello from sample" });
         const status = yield* client.get("/api/extensions", { headers: read });
-        expect(yield* status.json).toEqual({ extensions: [{ id: "sample", backend: "ready" }] });
+        expect(yield* status.json).toMatchObject({
+          extensions: [{ id: "sample", backend: "ready", lifecycle: { state: "ready" } }],
+        });
         return Number(yield* fs.readFileString(path.join(dataDir, "backend.pid")));
       }),
     );
@@ -238,7 +247,7 @@ it.live("a headless dist module walks up to the workspace list and serves the ba
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       expect(yield* fs.exists(path.join(dataDir, "backend.pid"))).toBe(true);
-      expect(yield* (yield* client.get("/api/extensions", { headers: read })).json).toEqual({
+      expect(yield* (yield* client.get("/api/extensions", { headers: read })).json).toMatchObject({
         extensions: [{ id: "sample", backend: "ready" }],
       });
       expect(yield* (yield* client.get("/ext/sample/hello", { headers: read })).json).toEqual({
@@ -246,6 +255,64 @@ it.live("a headless dist module walks up to the workspace list and serves the ba
       });
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "owner pushes real lifecycle changes and extension UIs can read state and restart while down",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let snapshot: BackendOwnerSnapshot = {
+          id: "sample",
+          lifecycle: { state: "starting", since: 1 },
+        };
+        const control = yield* makeBackendControl({
+          snapshots: () => [snapshot],
+          restart: () => {
+            snapshot = { ...snapshot, lifecycle: { state: "restarting", since: 4 } };
+            return true;
+          },
+        });
+        const { host, client, read, operate } = yield* harness(
+          false,
+          undefined,
+          [],
+          false,
+          undefined,
+          control.descriptor,
+        );
+        const reloading = yield* host.awaitState("sample", "reloading").pipe(Effect.forkScoped);
+        snapshot = {
+          ...snapshot,
+          lifecycle: { state: "reloading", reason: "Sources changed.", since: 2 },
+        };
+        control.publish(snapshot);
+        yield* Fiber.join(reloading);
+        expect(
+          yield* (yield* client.get("/ext/sample/.t4/host/state", { headers: read })).json,
+        ).toEqual(snapshot.lifecycle);
+        const down = yield* host.awaitState("sample", "down").pipe(Effect.forkScoped);
+        snapshot = {
+          ...snapshot,
+          lifecycle: { state: "down", lastError: "Readiness failed.", since: 3, attempt: 8 },
+        };
+        control.publish(snapshot);
+        yield* Fiber.join(down);
+        const unavailable = yield* client.get("/ext/sample/hello", { headers: read });
+        expect(unavailable.status).toBe(503);
+        expect(unavailable.headers["retry-after"]).toBe("1");
+        expect(yield* unavailable.json).toEqual({ state: "down", retryAfterMs: 1000 });
+        expect((yield* client.post("/ext/sample/.t4/host/restart", { headers: read })).status).toBe(
+          403,
+        );
+        const requested = yield* client.post("/ext/sample/.t4/host/restart", { headers: operate });
+        expect(requested.status).toBe(202);
+        expect(yield* requested.json).toMatchObject({ state: "restarting" });
+        expect((yield* client.get("/ext/missing/.t4/host/state", { headers: read })).status).toBe(
+          404,
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.live("a missing list leaves no extensions and authenticates the empty routes", () =>
@@ -375,7 +442,7 @@ it.live("rejects a mismatched borrowed readiness identity without launching a ch
       const host = Context.get(services, ExtensionHost.ExtensionHost);
       yield* host.awaitState("sample", "failed");
       expect(yield* host.backend("sample")).toBeUndefined();
-      expect(yield* host.status).toEqual({
+      expect(yield* host.status).toMatchObject({
         extensions: [{ id: "sample", backend: "failed", message: "Backend readiness failed." }],
       });
       const config = Context.get(services, ServerConfig.ServerConfig);
@@ -409,14 +476,14 @@ it.live(
               );
               yield* host.awaitState("sample", "ready");
               expect(yield* host.backend("sample")).toEqual(descriptor);
-              expect(yield* host.status).toEqual({
+              expect(yield* host.status).toMatchObject({
                 extensions: [{ id: "sample", backend: "ready" }],
               });
-              expect(yield* (yield* client.get("/api/extensions", { headers: read })).json).toEqual(
-                {
-                  extensions: [{ id: "sample", backend: "ready" }],
-                },
-              );
+              expect(
+                yield* (yield* client.get("/api/extensions", { headers: read })).json,
+              ).toMatchObject({
+                extensions: [{ id: "sample", backend: "ready" }],
+              });
               const response = yield* client.get("/ext/sample/hello", { headers: read });
               expect(yield* response.json).toEqual({ message: "hello from sample" });
               expect(yield* fs.exists(path.join(config.logsDir, "extensions", "sample.log"))).toBe(
@@ -457,7 +524,7 @@ it.live("reports the desktop Node lookup failure through extension status", () =
         { extensionId: "sample", message },
       ]);
       yield* host.awaitState("sample", "failed");
-      expect(yield* (yield* client.get("/api/extensions", { headers: read })).json).toEqual({
+      expect(yield* (yield* client.get("/api/extensions", { headers: read })).json).toMatchObject({
         extensions: [{ id: "sample", backend: "failed", message }],
       });
       expect((yield* client.get("/ext/sample/hello", { headers: read })).status).toBe(503);

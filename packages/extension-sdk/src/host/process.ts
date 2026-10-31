@@ -183,6 +183,7 @@ export interface ProcessOptions {
   /** Explicitly enabled only by hosts running from development sources. */
   readonly development?: boolean;
   readonly onReload?: () => Effect.Effect<void>;
+  readonly onReloadFailed?: (message: string) => Effect.Effect<void>;
   readonly platform: NodeJS.Platform;
   readonly stateDir: string;
   readonly logsDir: string;
@@ -271,6 +272,19 @@ const launchChild = Effect.fn("ExtensionHost.launchChild")(function* (
       const requested = new Promise<void>((resolve) => {
         resume = resolve;
       });
+      let failure: string | undefined;
+      let failureListener: ((message: string) => void) | undefined;
+      const failed = Effect.callback<string>((resume) => {
+        const deliver = (message: string) => {
+          failure = undefined;
+          resume(Effect.succeed(message));
+        };
+        failureListener = deliver;
+        if (failure) deliver(failure);
+        return Effect.sync(() => {
+          if (failureListener === deliver) failureListener = undefined;
+        });
+      });
       const watcher = watchBackendSources({
         development: options.development === true,
         root: extension.root,
@@ -278,11 +292,40 @@ const launchChild = Effect.fn("ExtensionHost.launchChild")(function* (
         ...(extension.manifest.backend?.watch
           ? { patterns: extension.manifest.backend.watch }
           : {}),
+        ...(extension.manifest.backend?.watchIgnore
+          ? { watchIgnore: extension.manifest.backend.watchIgnore }
+          : {}),
+        precheck: async (files) => {
+          for (const file of files) {
+            if (!/\.[cm]?[jt]sx?$/.test(file)) continue;
+            // Oct 30 (owner): the stable port and exclusive data locks rule out two serving instances.
+            const valid = await new Promise<boolean>((resolve) => {
+              const checker = NodeChildProcess.spawn(
+                options.executable ?? process.execPath,
+                ["--check", NodePath.join(extension.root, file)],
+                {
+                  cwd: extension.backendCwd,
+                  windowsHide: true,
+                  stdio: "ignore",
+                  timeout: 10_000,
+                },
+              );
+              checker.once("error", () => resolve(false));
+              checker.once("close", (code) => resolve(code === 0));
+            });
+            if (!valid) {
+              failure = `reload failed: syntax check failed for ${file}`;
+              failureListener?.(failure);
+              return false;
+            }
+          }
+          return true;
+        },
         busy: () => probeBackendBusy(descriptor),
         reload: resume,
         log: (message) => process.stdout.write("[extensions:" + id + "] " + message + "\n"),
       });
-      return { requested, close: () => watcher.close() };
+      return { requested, failed, close: () => watcher.close() };
     }),
     (watcher) => Effect.sync(() => watcher.close()),
   );
@@ -295,10 +338,20 @@ const launchChild = Effect.fn("ExtensionHost.launchChild")(function* (
   );
   yield* ready;
   yield* onReady(descriptor);
-  return yield* Effect.raceFirst(
-    Effect.promise(() => processHandle.exited).pipe(Effect.as(false)),
-    Effect.promise(() => sourceReload.requested).pipe(Effect.as(true)),
-  );
+  while (true) {
+    const result = yield* Effect.raceFirst(
+      Effect.raceFirst(
+        Effect.promise(() => processHandle.exited).pipe(Effect.as(false)),
+        Effect.promise(() => sourceReload.requested).pipe(
+          Effect.andThen(options.onReload?.() ?? Effect.void),
+          Effect.as(true),
+        ),
+      ),
+      sourceReload.failed,
+    );
+    if (typeof result !== "string") return result;
+    yield* options.onReloadFailed?.(result) ?? Effect.void;
+  }
 });
 
 // Planned reloads close the child scope (including graceful shutdown) before relaunching.
@@ -316,6 +369,5 @@ export const launch = Effect.fn("ExtensionHost.launch")(function* (
       launchChild(extension, ready, options, onReady, stableEndpoint),
     );
     if (!reload) return;
-    yield* options.onReload?.() ?? Effect.void;
   }
 });

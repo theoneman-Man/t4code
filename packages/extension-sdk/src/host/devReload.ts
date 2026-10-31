@@ -24,7 +24,22 @@ const ignored = new Set([
   "temp",
 ]);
 
-export function isBackendSource(file: string, patterns?: readonly string[], dataPath?: string) {
+function matchesSourcePattern(relative: string, pattern: string) {
+  const normalized = pattern.replace(/^\.\//, "").replace(/\/$/, "") || ".";
+  return (
+    normalized === "." ||
+    relative === normalized ||
+    relative.startsWith(normalized + "/") ||
+    NodePath.matchesGlob(relative, normalized)
+  );
+}
+
+export function isBackendSource(
+  file: string,
+  patterns?: readonly string[],
+  dataPath?: string,
+  watchIgnore?: readonly string[],
+) {
   const relative = file.replaceAll("\\", "/").replace(/^\.\//, "");
   if (
     rootData.has(relative.split("/")[0]!) ||
@@ -33,23 +48,16 @@ export function isBackendSource(file: string, patterns?: readonly string[], data
   )
     return false;
   if (dataPath && (relative === dataPath || relative.startsWith(dataPath + "/"))) return false;
+  if (watchIgnore?.some((pattern) => matchesSourcePattern(relative, pattern))) return false;
   return (
-    patterns === undefined ||
-    patterns.some((pattern) => {
-      const normalized = pattern.replace(/^\.\//, "").replace(/\/$/, "") || ".";
-      return (
-        normalized === "." ||
-        relative === normalized ||
-        relative.startsWith(normalized + "/") ||
-        NodePath.matchesGlob(relative, normalized)
-      );
-    })
+    patterns === undefined || patterns.some((pattern) => matchesSourcePattern(relative, pattern))
   );
 }
 
 export function createReloadController(options: {
   readonly busy: () => Promise<ExtensionBackendBusy>;
   readonly reload: (changedFiles: number) => void;
+  readonly precheck?: (files: readonly string[]) => Promise<boolean>;
   readonly log: (message: string) => void;
 }) {
   const pending = new Set<string>();
@@ -73,17 +81,40 @@ export function createReloadController(options: {
     } catch {
       status = { busy: true, reason: "backend busy probe unavailable" };
     }
-    checking = false;
     if (closed) return;
     if (status.busy) {
+      checking = false;
       if (!deferred) options.log(`reload deferred: ${status.reason ?? "backend busy"}`);
       deferred = true;
       schedule(3_000);
       return;
     }
+    const files = [...pending];
+    pending.clear();
+    let valid = false;
+    try {
+      valid = (await options.precheck?.(files)) ?? true;
+    } catch {
+      valid = false;
+    }
+    checking = false;
+    if (closed) return;
+    if (!valid) {
+      deferred = false;
+      const editedDuringCheck = pending.size > 0;
+      for (const file of files) pending.add(file);
+      if (editedDuringCheck) schedule(750);
+      return;
+    }
+    // Oct 30 (owner): edits arriving during the pre-check need their own validation.
+    if (pending.size) {
+      for (const file of files) pending.add(file);
+      schedule(750);
+      return;
+    }
     closed = true;
-    options.log(`reloading backend (${pending.size} changed files)`);
-    options.reload(pending.size);
+    options.log(`reloading backend (${files.length} changed files)`);
+    options.reload(files.length);
   };
   return {
     changed(file: string) {
@@ -106,6 +137,8 @@ export function watchBackendSources(options: {
   readonly root: string;
   readonly dataDir: string;
   readonly patterns?: readonly string[];
+  readonly watchIgnore?: readonly string[];
+  readonly precheck?: (files: readonly string[]) => Promise<boolean>;
   readonly busy: () => Promise<ExtensionBackendBusy>;
   readonly reload: (changedFiles: number) => void;
   readonly log: (message: string) => void;
@@ -113,9 +146,11 @@ export function watchBackendSources(options: {
   if (!options.development || NodePath.resolve(options.root) === NodePath.resolve(options.dataDir))
     return { close() {} };
   const dataPath = NodePath.relative(options.root, options.dataDir).replaceAll("\\", "/");
-  const accepted = (file: string) => isBackendSource(file, options.patterns, dataPath);
+  const accepted = (file: string) =>
+    isBackendSource(file, options.patterns, dataPath, options.watchIgnore);
   const fingerprints = new Map<string, string>();
   const scan = (relative: string, result: Map<string, string>) => {
+    if (options.watchIgnore?.some((pattern) => matchesSourcePattern(relative, pattern))) return;
     if (
       rootData.has(relative.split("/")[0]!) ||
       relative.split("/").some((part) => ignored.has(part))
@@ -153,6 +188,7 @@ export function watchBackendSources(options: {
   scan("", fingerprints);
   const watcher = NodeFS.watch(options.root, { recursive: true }, (_event, filename) => {
     const relative = filename?.toString().replaceAll("\\", "/") ?? "";
+    if (options.watchIgnore?.some((pattern) => matchesSourcePattern(relative, pattern))) return;
     if (
       rootData.has(relative.split("/")[0]!) ||
       relative.split("/").some((part) => ignored.has(part))

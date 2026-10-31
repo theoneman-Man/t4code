@@ -377,39 +377,46 @@ it.live(
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
 
-it.live("child restarts preserve proxy URL and bearer and rotate launch identity", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const { fs, directory, dataDir, listFile } = yield* fixture;
-      yield* fs.writeFileString(listFile, JSON.stringify([{ path: fixtureRoot, dataDir }]));
-      const owner = yield* DesktopExtensionOwner.make({
-        hostRoot: directory,
-        platform: yield* HostProcess.Platform,
-        enabled: true,
-        stateDir: directory,
-        logsDir: directory,
-      });
-      const first = (yield* owner.bootstrap).extensionHost?.backends[0];
-      if (!first) return yield* Effect.die("Missing fixture descriptor");
-      const firstPid = Number(yield* fs.readFileString(NodePath.join(dataDir, "backend.pid")));
-      const restarting = yield* owner.awaitState("sample", "restarting").pipe(Effect.forkScoped);
-      const client = yield* HttpClient.HttpClient;
-      yield* client
-        .post(first.url + "/crash", { headers: { authorization: "Bearer " + first.token } })
-        .pipe(Effect.flatMap((response) => response.text));
-      yield* Fiber.join(restarting);
-      yield* owner.awaitState("sample", "ready");
-      const second = (yield* owner.bootstrap).extensionHost?.backends[0];
-      expect(second?.url).toBe(first.url);
-      expect(second?.token).toBe(first.token);
-      expect(second?.instanceId).not.toBe(first.instanceId);
-      const secondPid = Number(yield* fs.readFileString(NodePath.join(dataDir, "backend.pid")));
-      expect(secondPid).not.toBe(firstPid);
-      expect(() => process.kill(firstPid, 0)).toThrow();
-      yield* owner.stop;
-      expect(() => process.kill(secondPid, 0)).toThrow();
-    }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+it.live(
+  "authenticated owner restart preserves proxy URL and bearer and rotates launch identity",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { fs, directory, dataDir, listFile } = yield* fixture;
+        yield* fs.writeFileString(listFile, JSON.stringify([{ path: fixtureRoot, dataDir }]));
+        const owner = yield* DesktopExtensionOwner.make({
+          hostRoot: directory,
+          platform: yield* HostProcess.Platform,
+          enabled: true,
+          stateDir: directory,
+          logsDir: directory,
+        });
+        const bootstrap = yield* owner.bootstrap;
+        const first = bootstrap.extensionHost?.backends[0];
+        const control = bootstrap.extensionHost?.control;
+        if (!first || !control) return yield* Effect.die("Missing fixture descriptor");
+        const firstPid = Number(yield* fs.readFileString(NodePath.join(dataDir, "backend.pid")));
+        const restarting = yield* owner.awaitState("sample", "restarting").pipe(Effect.forkScoped);
+        const client = yield* HttpClient.HttpClient;
+        expect((yield* client.post(control.url + "/restart/sample")).status).toBe(401);
+        expect(
+          (yield* client.post(control.url + "/restart/sample", {
+            headers: { authorization: "Bearer " + control.token },
+          })).status,
+        ).toBe(202);
+        yield* Fiber.join(restarting);
+        yield* owner.awaitState("sample", "ready");
+        const second = (yield* owner.bootstrap).extensionHost?.backends[0];
+        expect(second?.url).toBe(first.url);
+        expect(second?.token).toBe(first.token);
+        expect(second?.instanceId).not.toBe(first.instanceId);
+        const secondPid = Number(yield* fs.readFileString(NodePath.join(dataDir, "backend.pid")));
+        expect(secondPid).not.toBe(firstPid);
+        expect(() => process.kill(firstPid, 0)).toThrow();
+        yield* owner.stop;
+        expect(() => process.kill(secondPid, 0)).toThrow();
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
 
 it.effect("WSL bootstrap explicitly disables headless Windows manifest launches", () =>
@@ -493,7 +500,7 @@ it.effect("missing Node fails clearly without spawning or handing ownership to t
         logsDir: directory,
       }).pipe(Effect.provideService(SpawnExecutableResolution, () => undefined));
       const bootstrap = yield* owner.bootstrap;
-      expect(bootstrap.extensionHost).toEqual({
+      expect(bootstrap.extensionHost).toMatchObject({
         listFile,
         backends: [],
         failures: [

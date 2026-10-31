@@ -60,13 +60,28 @@ const make = Effect.gen(function* () {
       method: request.method,
       path: target.path.split(/[?#]/, 1)[0],
     };
-    const backend = yield* host.backend(target.id);
+    let lifecycle = yield* host.lifecycle(target.id);
+    if (lifecycle && ["starting", "reloading", "restarting"].includes(lifecycle.state)) {
+      const eligible =
+        request.method === "GET" ||
+        request.method === "HEAD" ||
+        Boolean(
+          request.headers["idempotency-key"]?.trim() || request.headers["x-request-id"]?.trim(),
+        );
+      if (eligible) yield* host.awaitState(target.id, "ready").pipe(Effect.timeoutOption(20_000));
+      lifecycle = yield* host.lifecycle(target.id);
+    }
+    const backend =
+      lifecycle && lifecycle.state !== "ready" ? undefined : yield* host.backend(target.id);
     if (!backend) {
       yield* Effect.logWarning("Extension proxy backend unavailable.", {
         ...diagnostic,
         reason: "BackendUnavailable",
       });
-      return HttpServerResponse.jsonUnsafe({ error: "extension_unavailable" }, { status: 503 });
+      return HttpServerResponse.jsonUnsafe(
+        { state: lifecycle?.state ?? "down", retryAfterMs: 1000 },
+        { status: 503, headers: { "retry-after": "1", "cache-control": "no-store" } },
+      );
     }
     const upstreamRequest = HttpClientRequest.make(request.method)(
       `${backend.url}${target.path}${target.search}`,

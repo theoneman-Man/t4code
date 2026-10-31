@@ -29,7 +29,25 @@ export interface ExtensionBackendReady {
   readonly dataDir: string;
 }
 
-export type ExtensionBackendState = "starting" | "ready" | "restarting" | "failed" | "stopped";
+export type ExtensionBackendState =
+  | "starting"
+  | "ready"
+  | "reloading"
+  | "restarting"
+  | "down"
+  | "failed"
+  | "stopped";
+
+export interface ExtensionBackendLifecycle {
+  readonly state: "starting" | "ready" | "reloading" | "restarting" | "down";
+  readonly reason?: string;
+  readonly lastError?: string;
+  readonly since: number;
+  readonly attempt?: number;
+}
+
+export const EXTENSION_HOST_STATE_PATH = "/.t4/host/state";
+export const EXTENSION_HOST_RESTART_PATH = "/.t4/host/restart";
 
 /** Browser-facing proxy prefix: `/ext/<id>/<backend path>`. */
 export const EXTENSION_PROXY_PREFIX = "/ext";
@@ -43,6 +61,7 @@ export interface ExtensionStatus {
   readonly backend: ExtensionBackendState | "none";
   /** Human-readable reason for `failed`/`restarting`; never contains secrets. */
   readonly message?: string;
+  readonly lifecycle?: ExtensionBackendLifecycle;
 }
 
 export interface ExtensionStatusResponse {

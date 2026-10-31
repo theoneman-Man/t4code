@@ -25,6 +25,8 @@ export interface ExtensionBackendManifest {
   readonly dataDir?: string;
   /** Development source selection, relative to the extension root. Defaults to the whole folder. */
   readonly watch?: readonly string[];
+  /** Development exclusions, relative to the extension root. Exclusions win over watch. */
+  readonly watchIgnore?: readonly string[];
 }
 
 export interface ExtensionManifest {
@@ -123,11 +125,28 @@ function parseBackend(value: unknown, source: string): ExtensionBackendManifest 
     );
   }
   const [first, ...rest] = command as string[];
+  if (
+    value.watchIgnore !== undefined &&
+    (!Array.isArray(value.watchIgnore) ||
+      !value.watchIgnore.every(
+        (pattern) =>
+          nonEmptyString(pattern) &&
+          !pattern.startsWith("/") &&
+          !pattern.includes("\\") &&
+          !pattern.includes(":") &&
+          !pattern.startsWith("!") &&
+          !pattern.split("/").includes(".."),
+      ))
+  )
+    throw new ExtensionManifestError(
+      source + ": backend.watchIgnore must be an array of relative globs or directories",
+    );
   return {
     command: [first as string, ...rest],
     cwd,
     protocol: EXTENSION_BACKEND_PROTOCOL,
     ...(value.watch === undefined ? {} : { watch: value.watch as string[] }),
+    ...(value.watchIgnore === undefined ? {} : { watchIgnore: value.watchIgnore as string[] }),
     ...(value.dataDir === undefined ? {} : { dataDir: value.dataDir as string }),
   };
 }

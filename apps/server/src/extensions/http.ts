@@ -1,5 +1,10 @@
 import { AuthOrchestrationOperateScope, AuthOrchestrationReadScope } from "@t3tools/contracts";
-import { EXTENSION_PROXY_PREFIX, EXTENSION_STATUS_PATH } from "@t3tools/extension-sdk/protocol";
+import {
+  EXTENSION_PROXY_PREFIX,
+  EXTENSION_STATUS_PATH,
+  EXTENSION_HOST_STATE_PATH,
+  EXTENSION_HOST_RESTART_PATH,
+} from "@t3tools/extension-sdk/protocol";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -34,6 +39,36 @@ const authenticate = Effect.fn("ExtensionHttp.authenticate")(function* (scope: "
 const proxy = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const host = yield* ExtensionHost.ExtensionHost;
+  const hostTarget = parseProxyTarget(request.url);
+  if (hostTarget?.path === EXTENSION_HOST_STATE_PATH && request.method === "GET") {
+    yield* authenticate("read");
+    const lifecycle = yield* host.lifecycle(hostTarget.id);
+    return lifecycle
+      ? HttpServerResponse.jsonUnsafe(lifecycle, { headers: { "cache-control": "no-store" } })
+      : HttpServerResponse.empty({ status: 404 });
+  }
+  if (hostTarget?.path === EXTENSION_HOST_RESTART_PATH && request.method === "POST") {
+    yield* authenticate("operate");
+    return yield* host.restart(hostTarget.id).pipe(
+      Effect.map((lifecycle) =>
+        lifecycle
+          ? HttpServerResponse.jsonUnsafe(lifecycle, {
+              status: 202,
+              headers: { "cache-control": "no-store" },
+            })
+          : HttpServerResponse.empty({ status: 404 }),
+      ),
+      Effect.catchTags({
+        ExtensionHostError: () =>
+          Effect.succeed(
+            HttpServerResponse.jsonUnsafe(
+              { error: "restart_unavailable" },
+              { status: 503, headers: { "retry-after": "1", "cache-control": "no-store" } },
+            ),
+          ),
+      }),
+    );
+  }
   const target = yield* host.resolveRoute(request.method, request.url);
   yield* authenticate(target?.scope ?? "read");
   if (!parseProxyTarget(request.url))
@@ -43,8 +78,11 @@ const proxy = Effect.gen(function* () {
   return yield* service.forward(request, target).pipe(
     Effect.catchTags({
       ExtensionProxyError: () =>
-        Effect.succeed(
-          HttpServerResponse.jsonUnsafe({ error: "extension_unavailable" }, { status: 503 }),
+        Effect.map(host.lifecycle(target.id), (lifecycle) =>
+          HttpServerResponse.jsonUnsafe(
+            { state: lifecycle?.state ?? "down", retryAfterMs: 1000 },
+            { status: 503, headers: { "retry-after": "1", "cache-control": "no-store" } },
+          ),
         ),
     }),
   );

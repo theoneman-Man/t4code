@@ -99,6 +99,39 @@ it("accepts sources, relative dirs and globs while excluding the actual data dir
   expect(isBackendSource("private-state/a.json", undefined, "private-state")).toBe(false);
 });
 
+it("watchIgnore wins over inclusions and matches directories and globs", () => {
+  const ignores = ["**/*.test.ts", "**/*.md", "pipeline/library"];
+  expect(isBackendSource("pipeline/main.ts", ["pipeline"], undefined, ignores)).toBe(true);
+  expect(isBackendSource("pipeline/main.test.ts", ["pipeline"], undefined, ignores)).toBe(false);
+  expect(isBackendSource("pipeline/library/book.ts", ["pipeline"], undefined, ignores)).toBe(false);
+  expect(isBackendSource("README.md", undefined, undefined, ignores)).toBe(false);
+});
+
+it("failed pre-check leaves the serving backend alone and accepts a later edit", async () => {
+  vi.useFakeTimers();
+  const reload = vi.fn();
+  const precheck = vi.fn().mockResolvedValue(false);
+  const controller = createReloadController({
+    busy: async () => ({ busy: false }),
+    precheck,
+    reload,
+    log: vi.fn(),
+  });
+  try {
+    controller.changed("a.ts");
+    await vi.advanceTimersByTimeAsync(750);
+    expect(reload).not.toHaveBeenCalled();
+    precheck.mockResolvedValue(true);
+    controller.changed("b.ts");
+    await vi.advanceTimersByTimeAsync(750);
+    expect(precheck).toHaveBeenLastCalledWith(["a.ts", "b.ts"]);
+    expect(reload).toHaveBeenCalledOnce();
+  } finally {
+    controller.close();
+    vi.useRealTimers();
+  }
+});
+
 it.each([404, 405])("reloads without an optional busy endpoint (%s)", async (status) => {
   using fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status }));
   expect(await probeBackendBusy({ url: "http://localhost", token: "fixture" })).toEqual({
