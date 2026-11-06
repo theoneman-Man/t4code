@@ -48,7 +48,7 @@ const make = Effect.gen(function* () {
             projectId: ProjectId.make(prepared.projectId),
             title: input.title,
             modelSelection: prepared.modelSelection,
-            runtimeMode: "approval-required",
+            runtimeMode: input.runtimeMode ?? "approval-required",
             interactionMode: "default",
             workspaceStrategy: { type: "root" },
             createdBy: "agent",

@@ -16,6 +16,7 @@ export type ThreadMedia = typeof ThreadMedia.Type;
 const text = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100_000));
 export const LaunchThreadInput = Schema.Struct({
   projectId: Schema.optional(text),
+  runtimeMode: Schema.optional(Schema.Literals(["approval-required", "auto-accept-edits"])),
   title: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
   prompt: text,
   media: Schema.optional(ThreadMedia),

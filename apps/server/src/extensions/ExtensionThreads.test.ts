@@ -153,6 +153,16 @@ it.live(
       expect(launched.size).toBe(1);
       expect(launches).toBe(1);
       expect((yield* post(root, operate.token, { ...input, prompt: "Changed" })).status).toBe(409);
+      expect(
+        (yield* post(root, operate.token, { ...input, runtimeMode: "auto-accept-edits" })).status,
+      ).toBe(409);
+      expect(
+        (yield* post(root, operate.token, {
+          ...input,
+          idempotencyKey: "unrestricted",
+          runtimeMode: "full-access",
+        })).status,
+      ).toBe(400);
       expect((yield* post(root, operate.token, { ...input, prompt: "" })).status).toBe(400);
       const backendAuth = { authorization: `Bearer ${descriptor.token}` };
       const owned = `${root}/${encodeURIComponent(id)}`;

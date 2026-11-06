@@ -1,7 +1,31 @@
 import * as Schema from "effect/Schema";
 import { expect, it } from "vite-plus/test";
-import { createThreadClient, createBackendThreadClient, ThreadReadResult } from "./threads.ts";
+import {
+  createThreadClient,
+  createBackendThreadClient,
+  ThreadReadResult,
+  LaunchThreadInput,
+} from "./threads.ts";
 import { parseExtensionManifest } from "./manifest.ts";
+
+it("preserves an explicit workspace-write launch and rejects unrestricted modes", async () => {
+  const bodies: unknown[] = [];
+  const client = createThreadClient(async (_path, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return Response.json({ threadId: "owned" });
+  });
+  const input = {
+    title: "Import",
+    prompt: "Extract",
+    idempotencyKey: "import",
+    runtimeMode: "auto-accept-edits" as const,
+  };
+  await client.launchThread(input);
+  expect(bodies).toEqual([input]);
+  for (const runtimeMode of ["full-access", "auto", "invalid"]) {
+    expect(() => Schema.decodeUnknownSync(LaunchThreadInput)({ ...input, runtimeMode })).toThrow();
+  }
+});
 
 it("declares the optional threads permission and rejects unknown permissions", () => {
   expect(

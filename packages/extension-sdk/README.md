@@ -99,13 +99,17 @@ Add `"permissions": ["threads"]` to the manifest to enable the reserved host rou
 Backends use their current `T4_EXT_TOKEN` bearer, which grants access only to their extension's
 owned threads. This bearer does not grant arbitrary RPC or access to other threads.
 
-`useExtThreads()` returns `launchThread({ projectId?, title, prompt, instructions?, idempotencyKey, media? })`,
+`useExtThreads()` returns `launchThread({ projectId?, runtimeMode?, title, prompt, instructions?, idempotencyKey, media? })`,
 `sendToThread(threadId, text, media?)`, `readThread(threadId, { after? })`,
 `subscribeThread(threadId, onEvent)` and `openThread(threadId)`.
 Launch returns a thread ID. Reusing a key with the same input returns the same thread;
 changing its input returns 409. Receipts survive host restarts. Omitting `projectId` uses the
 host's scratch project. The project's effective default model must be configured. Launches
-require approvals. Optional instructions precede the prompt in the initial message.
+default to `approval-required`. A workflow that writes its project's files can explicitly request
+`runtimeMode: "auto-accept-edits"`, which gives Codex workspace-write access with user-reviewed
+escalation. The extension API rejects `auto` and `full-access`. Application review gates, such as
+approving proposed map buckets, remain separate from filesystem access. Optional instructions
+precede the prompt in the initial message.
 `media` accepts up to 24 `{ path, name?, mimeType? }` references to absolute extension backend
 GET paths, including version queries. The timeline loads thumbnails and opens the original on
 click. Media stays on the backend; the host stores references and returns them in `messages[].media` with their owning `messages[].extensionId`.
