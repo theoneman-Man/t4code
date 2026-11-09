@@ -139,3 +139,5 @@ Electron profiles and default data. Explicit `T3CODE_HOME`, `--home-dir` and
 `@layer host-branding`. Tokens take precedence over upstream theme defaults. Use a PNG favicon for native window/tray icons
 and macOS/Linux artifact icons; an ICO logo or favicon can supply the Windows artifact icon. Packaged apps
 carry the resolved identity and assets and do not need the local config file.
+
+Workspace slots may set `default: true` to open on an initial root load with no hash. If several slots set it, the first registered slot wins. Explicit routes and subsequent navigation take precedence.

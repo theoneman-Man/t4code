@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import { useThreadRouteRef } from "../hooks/useThreadRouteTarget";
-import { findExtensionSlot } from "./registry";
+import { extensionSlots, findExtensionSlot, type RegisteredSlot } from "./registry";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 
 function activateExtensionPanel(threadRef: ScopedThreadRef, id: string) {
@@ -11,6 +11,8 @@ function activateExtensionPanel(threadRef: ScopedThreadRef, id: string) {
 }
 
 const NAVIGATION_EVENT = "t4:extension-navigation";
+const initialLocationAllowsDefault = window.location.pathname === "/" && !window.location.hash;
+let defaultLandingConsumed = false;
 export function openWorkspace(id: string) {
   window.dispatchEvent(new CustomEvent(NAVIGATION_EVENT, { detail: { kind: "workspace", id } }));
 }
@@ -40,12 +42,23 @@ export function extensionHashKey(hash: string, kind: "workspace" | "settings") {
   }
 }
 
-export function ExtensionNavigationBridge() {
+export function ExtensionNavigationBridge({
+  entries = extensionSlots,
+}: {
+  entries?: readonly RegisteredSlot[];
+}) {
   const navigate = useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
   const hash = useLocation({ select: (location) => location.hash });
   const initialWorkspace = useRef(pathname === "/" ? extensionHashKey(hash, "workspace") : null);
   const threadRef = useThreadRouteRef();
+  const defaultWorkspace = useRef(
+    pathname === "/" &&
+      !hash &&
+      (entries !== extensionSlots || (initialLocationAllowsDefault && !defaultLandingConsumed))
+      ? entries.find((entry) => entry.slot.kind === "workspace" && entry.slot.default)?.key
+      : undefined,
+  );
   useEffect(() => {
     if (pathname === "/") return;
     const workspace = initialWorkspace.current;
@@ -91,5 +104,11 @@ export function ExtensionNavigationBridge() {
     window.addEventListener(NAVIGATION_EVENT, listener);
     return () => window.removeEventListener(NAVIGATION_EVENT, listener);
   }, [navigate, pathname, threadRef]);
+  useEffect(() => {
+    const workspace = defaultWorkspace.current;
+    if (entries === extensionSlots) defaultLandingConsumed = true;
+    defaultWorkspace.current = undefined;
+    if (workspace) openWorkspace(workspace);
+  }, [entries]);
   return null;
 }

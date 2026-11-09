@@ -5,7 +5,7 @@ export type ExtContext = { environmentId: string; projectId?: string; threadId?:
 export type ExtView = ComponentType<{ context: ExtContext; active: boolean }>;
 type Slot = { id: string; title: string; component: ExtView };
 export type ExtSlot =
-  | (Slot & { kind: "workspace"; icon: ComponentType; keepAlive?: boolean })
+  | (Slot & { kind: "workspace"; icon: ComponentType; keepAlive?: boolean; default?: boolean })
   | (Slot & {
       kind: "rightPanel";
       icon: ComponentType;

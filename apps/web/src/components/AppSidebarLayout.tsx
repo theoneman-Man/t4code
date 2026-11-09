@@ -63,8 +63,20 @@ import {
 } from "./ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { useThreadRouteRef } from "../hooks/useThreadRouteTarget";
-import { ExtensionWorkspaceOutlet } from "../extensions/Workspace";
+import { ExtensionWorkspaceOutlet, WorkspaceSwitcher } from "../extensions/Workspace";
 import { ExtensionNavigationBridge } from "../extensions/navigation";
+import { extensionSlots } from "../extensions/registry";
+
+// The workspace switcher sits beside the sidebar toggle, so title-bar content
+// starts after both controls whenever an extension registers a workspace.
+const TITLEBAR_CONTENT_LEFT_STYLE = (
+  extensionSlots.some((entry) => entry.slot.kind === "workspace")
+    ? {
+        "--workspace-titlebar-content-left":
+          "calc(var(--workspace-controls-left) + 2 * var(--workspace-titlebar-control-size) + 0.25rem + var(--workspace-titlebar-control-gap))",
+      }
+    : {}
+) as CSSProperties;
 
 const MACOS_TRAFFIC_LIGHTS_LEFT_INSET = "var(--desktop-window-controls-inset, 90px)";
 
@@ -182,7 +194,7 @@ function SidebarControl() {
   return (
     <div
       className={cn(
-        "pointer-events-none fixed left-[var(--workspace-controls-left)] top-[var(--workspace-controls-top)] z-50 ml-px flex h-[var(--workspace-topbar-height)] items-center",
+        "pointer-events-none fixed left-[var(--workspace-controls-left)] top-[var(--workspace-controls-top)] z-50 ml-px flex h-[var(--workspace-topbar-height)] items-center gap-1",
         isMobile && mobileSheetMounted && "hidden",
       )}
       data-sidebar-control=""
@@ -204,6 +216,7 @@ function SidebarControl() {
           Toggle main sidebar{shortcutLabel ? ` (${shortcutLabel})` : ""}
         </TooltipPopup>
       </Tooltip>
+      <WorkspaceSwitcher onBackdrop={Boolean(isSidebarVisible && stageBackdropVariant)} />
     </div>
   );
 }
@@ -368,6 +381,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const sidebarProviderStyle = {
     "--sidebar-width": `${clampThreadSidebarWidth(sidebarWidth, sidebarMinimumWidth, sidebarMaximumWidth)}px`,
     "--panel-animation-duration": `${panelAnimationDurationMs}ms`,
+    ...TITLEBAR_CONTENT_LEFT_STYLE,
     ...windowControlsInsetStyle,
   } as CSSProperties;
 
@@ -396,7 +410,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
       <SidebarProvider
         className="h-dvh! min-h-0!"
         data-panel-animations={routePanelAnimationsActive ? "true" : "false"}
-        defaultOpen
+        defaultOpen={false}
         style={sidebarProviderStyle}
       >
         <SidebarBrandWidthProbe onWidthChange={setBrandWidth} />

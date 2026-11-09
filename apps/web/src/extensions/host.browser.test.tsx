@@ -223,7 +223,7 @@ it("refreshes backend status after a proxied 503", async () => {
   );
   await expect.element(screen.getByRole("button", { name: "Request backend" })).toBeVisible();
   await screen.getByRole("button", { name: "Request backend" }).click();
-  await expect.element(screen.getByText("Extension restarting.", { exact: true })).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: /Backend restarting/ })).toBeVisible();
   expect(statusReads).toBe(2);
 });
 
@@ -277,7 +277,7 @@ it("refreshes backend status when the shared event stream reconnects", async () 
   await act(() => controller!.close());
   await pendingRetry;
   await act(() => retry());
-  await expect.element(screen.getByText("Extension restarting.", { exact: true })).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: /Backend restarting/ })).toBeVisible();
   expect(statusReads).toBe(2);
 });
 

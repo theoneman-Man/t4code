@@ -9,6 +9,13 @@ export function validateExtensionModule(module: ExtensionModule, id: string): Ex
     if (!/^[a-z][a-z0-9-]*$/.test(slot.id) || seen.has(slot.id)) {
       throw new Error(`Extension ${id}: invalid or duplicate slot id ${slot.id}.`);
     }
+    if (
+      slot.kind === "workspace" &&
+      slot.default !== undefined &&
+      typeof slot.default !== "boolean"
+    ) {
+      throw new Error(`Extension ${id}: workspace default must be a boolean.`);
+    }
     seen.add(slot.id);
   }
   return module;
