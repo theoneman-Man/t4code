@@ -83,12 +83,12 @@ it("supports keyboard selection and Escape without changing the workspace", asyn
   );
   const trigger = screen.getByRole("button", { name: "Switch workspace" });
   await trigger.click();
-  await userEvent.keyboard("{End}{Enter}");
+  await userEvent.keyboard("{Home}{ArrowRight}{Enter}");
   await expect
     .element(trigger)
     .toHaveAttribute("aria-description", "Current workspace: Sample workspace");
   await expect.element(trigger).toHaveFocus();
-  await userEvent.keyboard("{ArrowDown}");
+  await userEvent.keyboard("{Enter}");
   await expect.element(page.getByRole("menu")).toBeVisible();
   await userEvent.keyboard("{Escape}");
   await expect.element(page.getByRole("menu")).not.toBeInTheDocument();
@@ -96,7 +96,7 @@ it("supports keyboard selection and Escape without changing the workspace", asyn
   await expect
     .element(trigger)
     .toHaveAttribute("aria-description", "Current workspace: Sample workspace");
-  await userEvent.keyboard("{ArrowDown}{Home}{Enter}");
+  await userEvent.keyboard("{Enter}{End}{ArrowLeft}{Enter}");
   await expect.element(page.getByRole("menu")).not.toBeInTheDocument();
   await expect.element(trigger).toHaveFocus();
 });
@@ -123,9 +123,15 @@ it("keeps the icon popup legible in light and dark themes", async () => {
     if (!(popup instanceof HTMLElement) || !(button instanceof HTMLElement))
       throw new Error("Missing switcher");
     expect(button.getBoundingClientRect().width).toBeLessThan(50);
-    expect(popup.getBoundingClientRect().top).toBeGreaterThanOrEqual(
-      button.getBoundingClientRect().bottom,
+    expect(popup.getBoundingClientRect().left).toBeGreaterThanOrEqual(
+      button.getBoundingClientRect().right,
     );
+    const items = popup.querySelectorAll<HTMLElement>('[role="menuitemradio"]');
+    expect(items).toHaveLength(2);
+    expect(items[0]!.getBoundingClientRect().left).toBeLessThan(
+      items[1]!.getBoundingClientRect().left,
+    );
+    expect(items[0]!.getBoundingClientRect().top).toBe(items[1]!.getBoundingClientRect().top);
     backgrounds.push(getComputedStyle(popup).backgroundColor);
     expect(getComputedStyle(popup).backdropFilter).toContain("blur(24px)");
     await userEvent.keyboard("{Escape}");

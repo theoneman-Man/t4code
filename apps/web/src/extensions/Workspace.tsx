@@ -25,7 +25,7 @@ export function WorkspaceSwitcher({
   const title = selected?.slot.title ?? "Chat";
   const Icon = selected?.slot.kind === "workspace" ? selected.slot.icon : ChatIcon;
   return (
-    <WorkspaceMenu.Root open={open} onOpenChange={setOpen}>
+    <WorkspaceMenu.Root open={open} onOpenChange={setOpen} orientation="horizontal">
       <WorkspaceMenu.Trigger
         ref={triggerRef}
         data-host-workspace="trigger"
@@ -37,7 +37,12 @@ export function WorkspaceSwitcher({
         <Icon />
       </WorkspaceMenu.Trigger>
       <WorkspaceMenu.Portal>
-        <WorkspaceMenu.Positioner align="start" sideOffset={4} data-host-workspace="positioner">
+        <WorkspaceMenu.Positioner
+          side="inline-end"
+          align="center"
+          sideOffset={6}
+          data-host-workspace="positioner"
+        >
           <WorkspaceMenu.Popup
             data-host-workspace="popup"
             aria-label="Workspaces"
